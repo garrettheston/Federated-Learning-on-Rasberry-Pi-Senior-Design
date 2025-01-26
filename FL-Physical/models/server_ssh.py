@@ -1,56 +1,49 @@
-import paramiko
-from scp import SCPClient
+import pickle
 import socket
-import time
-import threading
 
-
-
-def SendToClient(client,clientsocket, file = "",filepath = "",message = ""):
-    #try:
-    with SCPClient(client.get_transport()) as scp_Client:
-        scp_Client.put(file, filepath)
-
-    clientsocket.send(bytes(message, "utf-8"))
-    msg = clientsocket.recv(64)
-    msg_decoded = msg.decode("utf-8")
-    print(msg_decoded)
-    #except:
-    #    print("SentToClient() Failed.")
-
+def SendToClient(clientsocket, file_path="", message=""):
+    try:
+        # Open the file in binary read mode and send it
+        with open(file_path, "rb") as file:
+            model_data = file.read()
+            pickle_data = pickle.dumps(model_data)
+            clientsocket.sendall(pickle_data)  # Send serialized data
+            print(f"Server: Sent file '{file_path}' to client.")
+        
+        # Wait for acknowledgment from the client
+        msg = clientsocket.recv(64)
+        msg_decoded = msg.decode("utf-8")
+        print(f"Client acknowledgment: {msg_decoded}")
+    except Exception as e:
+        print(f"SendToClient() failed: {e}")
 
 def Connection_handling(clientsocket, address):
-    #time.sleep(5)
-    f = open("config_server.txt", "r")
-    lineCount = 0
-    for line in f:
-        currentLine = line.strip('\n').split("=")
-
-        if currentLine[0] == 'CLIENT_USRNM':
-            CLIENT_USRNM = currentLine[1]       
-
-        if currentLine[0] == 'CLIENT_PSWD':
-            CLIENT_PSWD = currentLine[1]  
+    try:
+        # Configuration for file paths and communication
+        file_path = "models/main_server_fed_overall.pt"  # File to send
+        message = "Server: Sent file to client"
         
-        lineCount += 1
+        print(f"Connection established with client at {address}")
+        SendToClient(clientsocket, file_path=file_path, message=message)
+        print("Model sent to the client successfully.")
+    except Exception as e:
+        print(f"Error in Connection_handling(): {e}")
 
-    f.close()
-    username = CLIENT_USRNM   # username of raspberry pi 4
-    password = CLIENT_PSWD   # pasword of raspberry pi 4
+# Sample usage of Connection_handling():
+# This is just to demonstrate. In actual implementation, the server would handle socket connections dynamically.
+if __name__ == "__main__":
+    HOST = "10.0.0.51"  # Server IP
+    PORT = 4045         # Server Port
 
-    # set up paramiko ssh client for scp file sending
-    SSH_client = paramiko.client.SSHClient()
-    SSH_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    SSH_client.connect(address[0], username=username, password=password)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.bind((HOST, PORT))
+        server_socket.listen(1)
+        print(f"Server listening on {HOST}:{PORT}...")
+        
+        clientsocket, address = server_socket.accept()
+        with clientsocket:
+            Connection_handling(clientsocket, address)
 
-
-    SendToClient(client=SSH_client,clientsocket=clientsocket,file="models/main_server_fed_overall.pt", 
-                 filepath="/home/pi/Desktop/main_server_fed.pt",
-                 message="Server:Sent file to client")
-    #time.sleep(3)
-
-    
-    SSH_client.close()
 
 '''  
 while !flag

@@ -38,10 +38,12 @@ import socket
 import time
 import threading
 
+# Custom Dataset for handling MNIST
 class CustomDataset(Dataset):
-    def __init__(self, data_tensor):
-        self.data = data_tensor[:, :-1].reshape(-1, 1, 28, 28)  # MNIST image shape (1, 28, 28)
-        self.targets = data_tensor[:, -1]
+    def __init__(self, data_tensor, target_tensor):
+        # Expecting 28x28 images with 1 channel
+        self.data = data_tensor.unsqueeze(1)  # Add the channel dimension (1, 28, 28)
+        self.targets = target_tensor
 
     def __len__(self):
         return len(self.data)
@@ -51,7 +53,10 @@ class CustomDataset(Dataset):
 
 # Define function to adjust Privacy Budget
 def adjustPB(PBList, accList):
-    print(PBList)
+    print("Adjusting Privacy Budget...")
+    print("Original Privacy Budget List:", PBList)
+    print("Accuracy List:", accList)
+    
     newAcc = []
     newPB = PBList.copy()
     newAcc = accList.copy()
@@ -64,23 +69,23 @@ def adjustPB(PBList, accList):
             accList[index] = 0
         index = accList.index(item)
         indexList.append(index)
-        print(index)
+        print(f"Adjusting index: {index}")
         newPB[index] = newPB[index] - (0.1 * i)
         if newPB[index] > 2:
             newPB[index] = 2
         if newPB[index] < 0.7:
             newPB[index] = 0.7
         i -= 1
-    print(newPB)
+    print("New Privacy Budget List:", newPB)
     return newPB
 
-
 if __name__ == '__main__':
+    print("Loading config_server.txt...")
     f = open("config_server.txt", "r")
     lineCount = 0
     for line in f:
         currentLine = line.strip('\n').split("=")
-        print(currentLine)
+        print("Reading line:", currentLine)
 
         if currentLine[0] == 'NUM_CLIENTS':
             NUM_CLIENTS = int(currentLine[1])
@@ -100,6 +105,8 @@ if __name__ == '__main__':
         lineCount += 1
 
     f.close()
+    print("Config values loaded: NUM_CLIENTS={}, SERVER_PORT={}, SERVER_IP={}".format(NUM_CLIENTS, PORT, SERVER))
+
     # parse args
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
@@ -114,10 +121,11 @@ if __name__ == '__main__':
     training_accuracy_list = []
     training_loss_list = []
 
-    # load dataset and split users
+    print("Loading dataset...")
     dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transforms.ToTensor())
-    print(len(dataset))
-    dataset = CustomDataset(torch.Tensor(np.array(dataset.data), dtype=torch.float32))
+    print(f"Dataset loaded with {len(dataset)} samples.")
+    
+    dataset_train = CustomDataset(torch.from_numpy(np.array(dataset.data)).float(), torch.from_numpy(np.array(dataset.targets)).long())        
     
     total_count = len(dataset)
     train_count = int(0.05 * total_count)  # 5%
@@ -128,17 +136,31 @@ if __name__ == '__main__':
     img_size = dataset_train[0][0].shape
     
     # build model
+    print("Building model...")
     if args.model == 'resnet':
         net_glob = torchvision.models.resnet18()
         net_glob.conv1 = torch.nn.Conv2d(1, 64, (7, 7), (2, 2), (3, 3), bias=False)
         net_glob.fc = torch.nn.Linear(net_glob.fc.in_features, 10)  # MNIST has 10 classes
         net_glob.to(args.device)
+        
+        # Check if the model weights file exists
+        model_path = 'models/main_server_fed_overall.pt'
+
+        if not os.path.exists(model_path):
+            print(f"{model_path} not found. Initializing model and saving it.")
+            # If the model doesn't exist, initialize and save it
+            torch.save(net_glob.state_dict(), model_path)
+        else:
+            print(f"Loading model from {model_path}")
+            net_glob.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            
     else:
         exit('Error: unrecognized model')
 
     net_glob.load_state_dict(torch.load("models/main_server_fed_overall.pt", map_location=torch.device('cpu')))
     net_glob.train()
 
+    print("Model loaded and training started...")
     # copy weights
     w_glob = net_glob.state_dict()
 
@@ -162,27 +184,31 @@ if __name__ == '__main__':
     host = SERVER
     port = PORT
 
+    print(f"Setting up server at {host}:{port}...")
     # set up TCP socket connection for server
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((host, port))
     server.listen(args.num_users) 
-        
+    print(f"Server listening on {host}:{port}")
+
     for iter in range(args.epochs):
+        print(f"Epoch {iter} started...")
         for idx in range(0, args.num_users):
-            print("In for loop :)")
+            print("Waiting for connection from client {}...".format(idx+1))
             clientsocket, address = server.accept() 
-            print("connection from " + address[0] + " accepted.")
+            print(f"Connection from {address[0]} accepted.")
             Connection_handling(clientsocket, address)
 
         # Wait for all client models to be received
+        print("Waiting for all models to be received...")
         modelFolder = MODELFOLDER
         fileCount = 0
         while (fileCount != args.num_users):
             for file in os.scandir(modelFolder):
                 if file.is_file():
                     fileCount += 1
+        print(f"Received all models. Starting aggregation for epoch {iter}.")
 
-        print("Epoch: ", iter)
         loss_locals = []
         if not args.all_clients:
             w_locals = []
@@ -191,7 +217,7 @@ if __name__ == '__main__':
 
         accuracyList = []
         for idx in range(1, args.num_users+1):
-            print(" User: ", idx)
+            print(f"User {idx} training...")
             
             File_in_use = True
             while File_in_use:
@@ -199,7 +225,7 @@ if __name__ == '__main__':
                     checkpoint = torch.load('Pi_models/main_server_fed_{}.pt'.format(idx), map_location=torch.device('cpu'))
                     File_in_use = False
                 except:
-                    print('Pi_models/main_server_fed_{}.pt being written currently'.format(idx))
+                    print(f'Pi_models/main_server_fed_{idx}.pt being written currently')
                     time.sleep(4)
                     File_in_use = True
             net_glob.load_state_dict(checkpoint)
@@ -220,6 +246,7 @@ if __name__ == '__main__':
         net_glob.load_state_dict(w_glob)
 
         # save the model
+        print("Saving the global model...")
         torch.save(net_glob.state_dict(), "models/main_server_fed_overall.pt")
 
         # print loss and accuracy of current model
@@ -227,26 +254,28 @@ if __name__ == '__main__':
         acc_train, l = test_img(net_glob, dataset_train, args)
         training_accuracy_list.append(acc_train)
         training_loss_list.append(l)
-        print('Accuracy: ', acc_train)
-        print('Loss: ', l)
-        print(training_accuracy_list)
+        print(f'Accuracy: {acc_train}, Loss: {l}')
 
         # Remove all previous models for new ones to come in
+        print("Removing previous models...")
         for file in os.scandir(modelFolder):
             os.remove(file)
 
     # Final Connection Handling to terminate clients
+    print("Terminating client connections...")
     for idx in range(0, args.num_users):  
         clientsocket, address = server.accept() 
-        print("connection from " + address[0] + " accepted.")
+        print(f"Connection from {address[0]} accepted.")
         clientsocket.send(bytes("EXIT()", "utf-8"))    
         msg = clientsocket.recv(64)
         msg_decoded = msg.decode("utf-8")
         print(msg_decoded)
 
     # testing
+    print("Testing final model...")
     net_glob.eval()
     acc_test, loss_test = test_img(net_glob, dataset_train, args)
 
     # Close the server
+    print("Closing the server...")
     server.close()

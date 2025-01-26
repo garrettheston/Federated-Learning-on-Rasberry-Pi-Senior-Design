@@ -1,174 +1,114 @@
-import paramiko
-from scp import SCPClient
+import os
 import socket
 import time
-import copy
-import numpy as np
-from torchvision import datasets, transforms
 import torch
-import torchvision
-from torch.utils.data import Dataset, DataLoader, random_split
-import torch.nn.functional as F
-from torch import nn
-import random
+import paramiko
+from scp import SCPClient
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 
-# Custom Dataset for handling MNIST
-class CustomDataset(Dataset):
-    def __init__(self, data_tensor):
-        self.data = data_tensor[:, :-1].reshape(-1, 1, 28, 28)  # Adjusting for MNIST's 28x28 size and 1 channel
-        self.targets = data_tensor[:, -1]
+# Constants and Parameters
+MODEL_SAVE_PATH = "./received_model.pt"  # Where the model received from the server will be saved
+MODEL_SEND_PATH = "./trained_model.pt"   # Path to save the trained model before sending it back
+SERVER_PORT = 4045                       # Example port for socket communication
+BUFFER_SIZE = 4096                       # Buffer size for receiving data
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    def __len__(self):
-        return len(self.data)
+def receive_model(client_socket, save_path=MODEL_SAVE_PATH):
+    """Receives the model file from the server."""
+    print("Receiving model from server...")
+    data = b""
+    while True:
+        packet = client_socket.recv(BUFFER_SIZE)
+        if not packet:  # End of transmission
+            break
+        data += packet
+    
+    # Save the received model to the specified path
+    with open(save_path, "wb") as model_file:
+        model_file.write(data)
+    print(f"Model received and saved at {save_path}")
 
-    def __getitem__(self, idx):
-        return self.data[idx], self.targets[idx]
-
-# Local Update Class
-class LocalUpdate(object):
-    def __init__(self, args, dataset_train=None, dataset_test=None):
-        self.args = args
-        self.loss_func = nn.CrossEntropyLoss()
-        self.ldr_train = DataLoader(dataset_train, batch_size=self.args.local_bs, shuffle=True)
-        self.ldr_test = DataLoader(dataset_test, batch_size=args.local_bs, shuffle=False)
-
-    def train(self, net):
-        net.train()
-        optimizer = torch.optim.SGD(net.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        epoch_loss = []
-        for iter in range(self.args.local_ep):
-            batch_loss = []
-            for batch_idx, (images, labels) in enumerate(self.ldr_train):
-                images, labels = images.to(self.args.device), labels.to(self.args.device)
-                labels = labels.float()
-                images = images.float()
-                net.zero_grad()
-                log_probs = net(images)
-                labels = labels.long()
-                loss = self.loss_func(log_probs, labels)
-                loss.backward()
-                optimizer.step()
-                batch_loss.append(loss.item())
-            epoch_loss.append(sum(batch_loss) / len(batch_loss))
-            print('Local Epoch {} Finished'.format(iter))
-            train_accuracy, train_loss = test(net, self.ldr_train, self.args)
-        return net.state_dict(), sum(epoch_loss) / len(epoch_loss), epoch_loss
-
-# Test function for evaluating the model
-def test(net_g, data_loader, args):
-    net_g.eval()
-    loss = 0
-    correct = 0
-    with torch.no_grad():
-        for data, target in data_loader:
-            data, target = data.to(args.device), target.to(args.device)
-            log_probs = net_g(data)
-            loss += F.cross_entropy(log_probs, target.long()).item()
-            y_pred = log_probs.argmax(dim=1)
-            correct += y_pred.eq(target).sum().item()
-
-    loss /= len(data_loader.dataset)
-    accuracy = correct / len(data_loader.dataset) * 100
-    print('Metrics: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
-        loss, correct, len(data_loader.dataset), accuracy))
-
-    return accuracy, loss
-
-# Function to send the model to the server
-def SendToServer(server, file="", filepath="", message=""):
-    with SCPClient(server.get_transport()) as scp_Client:
-        scp_Client.put(file, filepath)
-
-# Arguments for training
-class Args:
-    def __init__(self):
-        self.local_bs = 128
-        self.lr = 0.01
-        self.momentum = 0.9
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.verbose = True
-        self.local_ep = 1
-args = Args()
-
-# Read in the config file
-f = open("config.txt", "r")
-for line in f:
-    currentLine = line.strip('\n').split("=")
-    if currentLine[0] == 'CLIENT_ID':
-        CLIENT_ID = currentLine[1]
-    if currentLine[0] == 'SERVER_PORT':
-        PORT = int(currentLine[1])
-    if currentLine[0] == 'SERVER_IP':
-        SERVER = currentLine[1]
-    if currentLine[0] == 'SERVER_NAME':
-        SERVER_NAME = currentLine[1]
-    if currentLine[0] == 'SERVER_PASS':
-        SERVER_PASS = currentLine[1]
-    if currentLine[0] == 'SERVER_FILE_LOC':
-        SERVER_FILE_LOC = currentLine[1]
-f.close()
-
-# Create dataset (MNIST)
-dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transforms.ToTensor())
-
-# Split data
-total_count = len(dataset)
-train_count = int(0.01 * total_count)  # 1% for training
-test_count = total_count - train_count
-random.seed(42)
-torch.manual_seed(42)
-dataset_train, dataset_test = random_split(dataset, [train_count, test_count])
-
-# Create an instance of LocalUpdate
-test_loader = DataLoader(dataset_test, batch_size=args.local_bs, shuffle=False)
-local_update = LocalUpdate(args, dataset_train, dataset_test)
-
-# Define the model architecture (ResNet for MNIST)
-net_glob = torchvision.models.resnet18()
-net_glob.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)  # 1 channel for MNIST
-net_glob.fc = torch.nn.Linear(net_glob.fc.in_features, 10)  # 10 classes for MNIST
-net_glob.to(args.device)
-
-# Start the client connection
-client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-Searching_connection = True
-while Searching_connection:
+def send_model(server_ip, username, password, local_file, remote_path):
+    """Sends the trained model to the server using SCP."""
+    print("Sending trained model back to the server...")
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        client.connect((SERVER, PORT))
-        Searching_connection = False
-    except:
-        print("Searching for server system...")
-        time.sleep(2)
+        ssh_client.connect(server_ip, username=username, password=password)
+        with SCPClient(ssh_client.get_transport()) as scp:
+            scp.put(local_file, remote_path)
+        print(f"Model sent to server at {remote_path}")
+    except Exception as e:
+        print(f"Error sending model to server: {e}")
+    finally:
+        ssh_client.close()
 
-# Handle the connection and receive message
-msg = client.recv(1024)
-msg_decoded = msg.decode("utf-8")
-print(msg_decoded)
+def train_model(model, train_loader, epochs=1, lr=0.01, momentum=0.9):
+    """Trains the model locally."""
+    print("Starting local training...")
+    model.train()
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum)
+    criterion = torch.nn.CrossEntropyLoss()
 
-if(msg_decoded == "EXIT()"):
-    client.send(bytes(f"Client-{CLIENT_ID} terminated", "utf-8"))
-    client.close()
-    exit()
+    for epoch in range(epochs):
+        epoch_loss = 0
+        for images, labels in train_loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}")
 
-client.send(bytes("Client received file from server", "utf-8"))
-client.close()
+    print("Training complete.")
+    return model.state_dict()
 
-# Model Training
-time.sleep(5)
-# Load model parameters
-print("Loading Model Parameters...")
-net_glob.load_state_dict(torch.load('main_server_fed.pt'))
+def main():
+    # Connect to the server
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    while True:
+        try:
+            print(f"Connecting to server at {SERVER} on port {PORT}...")
+            client_socket.connect((SERVER, PORT))
+            print("Connected to server.")
+            break
+        except Exception as e:
+            print("Server not reachable. Retrying in 2 seconds...")
+            time.sleep(2)
+    
+    # Receive the initial model
+    receive_model(client_socket)
+    client_socket.sendall(b"Model received and saved.")
+    client_socket.close()
+    
+    # Load the received model
+    model = torch.load(MODEL_SAVE_PATH)
+    model.to(DEVICE)
 
-# Train the model
-print("\nTraining...")
-state_dict, avg_loss, lossPerEpoch = local_update.train(net_glob)
-print("Training Finished")
+    # Prepare data (replace with appropriate data preparation logic)
+    transform = transforms.Compose([transforms.ToTensor()])
+    dataset = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
+    train_loader = DataLoader(dataset, batch_size=128, shuffle=True)
+    
+    # Train the model
+    trained_state_dict = train_model(model, train_loader, epochs=1, lr=0.01, momentum=0.9)
+    
+    # Save the trained model
+    torch.save(trained_state_dict, MODEL_SEND_PATH)
+    print(f"Trained model saved at {MODEL_SEND_PATH}")
 
-# Save the trained model
-torch.save(state_dict, f'main_server_fed_{CLIENT_ID}.pt')
+    # Send the model back to the server
+    send_model(SERVER, SERVER_NAME, SERVER_PASS, MODEL_SEND_PATH, SERVER_FILE_LOC + "trained_model.pt")
 
-# Send model back to the server
-server_SSH = paramiko.client.SSHClient()
-server_SSH.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-server_SSH.connect(SERVER, username=SERVER_NAME, password=SERVER_PASS)
-SendToServer(server=server_SSH, file=f"main_server_fed_{CLIENT_ID}.pt", filepath=SERVER_FILE_LOC + f"main_server_fed_{CLIENT_ID}.pt", message="sent file")
+if __name__ == "__main__":
+    # Replace these values with your actual server config
+    SERVER = "192.168.1.1"          # Server IP
+    PORT = SERVER_PORT              # Server port
+    SERVER_NAME = "username"        # SSH username
+    SERVER_PASS = "password"        # SSH password
+    SERVER_FILE_LOC = "/home/server/models/"  # Path to save the model on the server
+
+    main()
