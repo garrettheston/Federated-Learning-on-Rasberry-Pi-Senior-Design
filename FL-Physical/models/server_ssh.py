@@ -1,5 +1,24 @@
 import pickle
 import socket
+import os
+import torch
+
+def SaveModelToFile(model_data, idx):
+    try:
+        # Deserialize the pickle data
+        model = pickle.loads(model_data)
+
+        # Ensure the Pi_models folder exists
+        model_folder = 'Pi_models'
+        if not os.path.exists(model_folder):
+            os.makedirs(model_folder)
+        
+        # Save the model to a .pt file
+        model_file_path = os.path.join(model_folder, f"main_server_fed_{idx}.pt")
+        torch.save(model, model_file_path)
+        print(f"Server: Saved model for client {idx} to {model_file_path}")
+    except Exception as e:
+        print(f"Error in SaveModelToFile(): {e}")
 
 def SendToClient(clientsocket, file_path="", message=""):
     try:

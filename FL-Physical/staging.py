@@ -2,20 +2,19 @@ import os
 import socket
 import time
 import torch
-import paramiko
-from scp import SCPClient
+import pickle
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
 # Constants and Parameters
-MODEL_SAVE_PATH = "./received_model.pt"  # Where the model received from the server will be saved
-MODEL_SEND_PATH = "./trained_model.pt"   # Path to save the trained model before sending it back
-SERVER_PORT = 4045                       # Example port for socket communication
-BUFFER_SIZE = 4096                       # Buffer size for receiving data
+MODEL_SAVE_PATH = "./received_model.pkl"  # Where the model received from the server will be saved
+MODEL_SEND_PATH = "./trained_model.pkl"   # Path to save the trained model before sending it back
+SERVER_PORT = 4045                        # Example port for socket communication
+BUFFER_SIZE = 4096                        # Buffer size for receiving data
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def receive_model(client_socket, save_path=MODEL_SAVE_PATH):
-    """Receives the model file from the server."""
+    """Receives the pickled model file from the server and unpickles it."""
     print("Receiving model from server...")
     data = b""
     while True:
@@ -24,25 +23,27 @@ def receive_model(client_socket, save_path=MODEL_SAVE_PATH):
             break
         data += packet
     
-    # Save the received model to the specified path
+    # Unpickle the model
+    model = pickle.loads(data)
+    # Save the model as a pickle file
     with open(save_path, "wb") as model_file:
-        model_file.write(data)
+        pickle.dump(model, model_file)
+    
     print(f"Model received and saved at {save_path}")
+    return model
 
-def send_model(server_ip, username, password, local_file, remote_path):
-    """Sends the trained model to the server using SCP."""
+def send_model(client_socket, model, buffer_size=BUFFER_SIZE):
+    """Sends the pickled model back to the server over the TCP socket."""
     print("Sending trained model back to the server...")
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        ssh_client.connect(server_ip, username=username, password=password)
-        with SCPClient(ssh_client.get_transport()) as scp:
-            scp.put(local_file, remote_path)
-        print(f"Model sent to server at {remote_path}")
-    except Exception as e:
-        print(f"Error sending model to server: {e}")
-    finally:
-        ssh_client.close()
+    
+    # Pickle the model
+    model_data = pickle.dumps(model)
+    
+    # Send the pickled model in chunks
+    for i in range(0, len(model_data), buffer_size):
+        client_socket.send(model_data[i:i+buffer_size])
+    
+    print(f"Trained model sent back to the server.")
 
 def train_model(model, train_loader, epochs=1, lr=0.01, momentum=0.9):
     """Trains the model locally."""
@@ -64,7 +65,7 @@ def train_model(model, train_loader, epochs=1, lr=0.01, momentum=0.9):
         print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}")
 
     print("Training complete.")
-    return model.state_dict()
+    return model
 
 def main():
     # Connect to the server
@@ -79,13 +80,11 @@ def main():
             print("Server not reachable. Retrying in 2 seconds...")
             time.sleep(2)
     
-    # Receive the initial model
-    receive_model(client_socket)
+    # Receive the initial model (as a pickled file)
+    model = receive_model(client_socket)
     client_socket.sendall(b"Model received and saved.")
-    client_socket.close()
     
     # Load the received model
-    model = torch.load(MODEL_SAVE_PATH)
     model.to(DEVICE)
 
     # Prepare data (replace with appropriate data preparation logic)
@@ -94,21 +93,16 @@ def main():
     train_loader = DataLoader(dataset, batch_size=128, shuffle=True)
     
     # Train the model
-    trained_state_dict = train_model(model, train_loader, epochs=1, lr=0.01, momentum=0.9)
+    trained_model = train_model(model, train_loader, epochs=1, lr=0.01, momentum=0.9)
     
-    # Save the trained model
-    torch.save(trained_state_dict, MODEL_SEND_PATH)
-    print(f"Trained model saved at {MODEL_SEND_PATH}")
+    # Send the trained model back to the server via TCP
+    send_model(client_socket, trained_model)
 
-    # Send the model back to the server
-    send_model(SERVER, SERVER_NAME, SERVER_PASS, MODEL_SEND_PATH, SERVER_FILE_LOC + "trained_model.pt")
+    client_socket.close()
 
 if __name__ == "__main__":
     # Replace these values with your actual server config
     SERVER = "192.168.1.1"          # Server IP
     PORT = SERVER_PORT              # Server port
-    SERVER_NAME = "username"        # SSH username
-    SERVER_PASS = "password"        # SSH password
-    SERVER_FILE_LOC = "/home/server/models/"  # Path to save the model on the server
 
     main()
