@@ -142,7 +142,7 @@ if __name__ == '__main__':
     f.close()
     # parse args
     args = args_parser()
-    args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
+    args.device = torch.device('cpu')
     ################## args def for testing
     args.num_users = NUM_CLIENTS
     args.epochs = NUM_gl_EPOCHS
@@ -156,7 +156,7 @@ if __name__ == '__main__':
     training_loss_list = []
 
     # load dataset and split users
-    dataset = torch.load('../../LS_HAR_data.pt')
+    dataset = torch.load('LS_HAR_data.pt', map_location=torch.device('cpu'))
     print(dataset.shape)
     #dataset = dataset.float()
     dataset = CustomDataset(dataset)
