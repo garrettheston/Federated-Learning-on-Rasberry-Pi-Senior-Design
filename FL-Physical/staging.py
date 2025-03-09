@@ -15,6 +15,77 @@ from torch.utils.data import Dataset,DataLoader, random_split
 import torch.nn.functional as F
 from torch import nn
 import random
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Protocol.KDF import HKDF
+from Crypto.Hash import SHA256
+import hashlib
+import os
+from kyber_py.ml_kem import ML_KEM_512 # updated kyber import
+
+# In the future this infrastructure could be facilitated via pickles
+def kyber_key_exchange_client(server_socket):
+    
+    # Receive public key
+    public_key = b""
+    
+    public_key = server_socket.recv(4096)
+        
+    print("[CLIENT] Public key received successfully.")
+
+    try: 
+        
+        # Encapsulate shared secret
+        shared_secret, ciphertext = ML_KEM_512.encaps(public_key)
+        print("Here is the ciphertext: ", ciphertext)
+
+        # Send ciphertext
+        server_socket.sendall(ciphertext)
+        print("[CLIENT] Ciphertext sent successfully.")
+
+        print("[CLIENT] Shared secret established successfully.")
+
+        return shared_secret
+
+    except Exception:
+        msg = public_key.decode("utf-8")
+        if(msg == "EXIT()"):
+            print("Socket with server is closing.")
+            server_socket.close()
+            exit()
+
+    return
+
+def decrypt_model(shared_secret):
+    aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+
+    wait_for_file("main_server_fed_encrypted.pt")
+
+    with open("main_server_fed_encrypted.pt", "rb") as f:
+        data = f.read()
+
+    iv, tag, ciphertext = data[:12], data[12:28], data[28:]  # Extract components
+
+    print(f"[CLIENT] tag: {tag}")
+    print(f"[CLIENT] iv: {iv}")
+
+    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=iv)
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+
+    with open("main_server_fed.pt", "wb") as f:
+        f.write(plaintext)
+
+    print("[CLIENT] Model decrypted successfully.")
+
+def wait_for_file(filename, timeout=10):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if os.path.exists(filename) and os.access(filename, os.R_OK):
+            print("Access is true")
+            return True  # File exists and is readable
+        print(f"Waiting for {filename} to become accessible...")
+        time.sleep(0.5)  # Wait 500ms before checking again
+    raise TimeoutError(f"File {filename} is not accessible after {timeout} seconds.")
 
 def test(net_g, data_loader, args):
     # testing
@@ -202,24 +273,29 @@ while True:
     
     ## Handle Connection
     # here is were we have communication with a socket back and forth
+    # general key exchange handler but also handles messages
+    #shared_secret = kyber_key_exchange_client(client)
+
     msg = client.recv(1024)
     msg_decoded = msg.decode("utf-8")
     print(msg_decoded)
 
     if(msg_decoded == "EXIT()"):
-        client.send(bytes("Client-"+CLIENT_ID+" terminated","utf-8"))
+        client.send(bytes("Client terminated", "utf-8"))
         client.close()
         exit()
-    
+
     client.send(bytes("Client recieved file from sever","utf-8"))
     client.close()
-    # we close socket here        
+    # we close socket here
+
+    #decrypt_model(shared_secret)    
     
     ## Model Training
     time.sleep(5)
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
-    net_glob.load_state_dict(torch.load('main_server_fed.pt'))
+    net_glob.load_state_dict(torch.load('main_server_fedd.pt'))
     # Call training function
     print("\nTraining...")
     state_dict, avg_loss, lossPerEpoch = local_update.train(net_glob)
@@ -228,28 +304,33 @@ while True:
     torch.save(state_dict, 'main_server_fed_'+CLIENT_ID+'.pt')
 
 
-
-    ## Send Model
-    # Here is only sending the model back
-    # no sockets
+    # Define your server credentials and file path
     username = SERVER_NAME  # username of central server
     password = SERVER_PASS  # password of central server
     file_path = SERVER_FILE_LOC
-        
 
+    # Create the SSH client and set the policy
+    print("Initializing SSH client...")
     server_SSH = paramiko.client.SSHClient()
     server_SSH.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    server_SSH.connect(SERVER, username=username, password=password)
-    SendToServer(server=server_SSH,file="main_server_fed_"+CLIENT_ID+".pt",
-                filepath=file_path+"main_server_fed_"+CLIENT_ID+".pt",
-                message="sent file")
 
+    try:
+        print(f"Connecting to the server {SERVER}...")
+        # Try connecting to the server
+        server_SSH.connect(SERVER, username=username, password=password)
+        print(f"Successfully connected to {SERVER}.")
+        
+        # If connected, proceed with sending the file
+        print(f"Preparing to send file: main_server_fed_{CLIENT_ID}.pt")
+        SendToServer(server=server_SSH,
+                    file="main_server_fed_" + CLIENT_ID + ".pt",
+                    filepath=file_path + "main_server_fed_" + CLIENT_ID + ".pt",
+                    message="sent file")
+        print(f"File sent successfully to {SERVER}.")
+        
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
 
-
-
-
-
-
-
-
-
+    finally:
+        server_SSH.close()
+        print("SSH connection closed.")
