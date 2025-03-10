@@ -37,42 +37,47 @@ def kyber_key_exchange_client(server_socket):
         
         # Encapsulate shared secret
         shared_secret, ciphertext = ML_KEM_512.encaps(public_key)
-        print("Here is the ciphertext: ", ciphertext)
+        print("[CLIENT] Here is the ciphertext: ", ciphertext)
+        print("[CLIENT] Here is the shared secret key derived from the server", shared_secret.hex())
 
         # Send ciphertext
         server_socket.sendall(ciphertext)
-        print("[CLIENT] Ciphertext sent successfully.")
-
-        print("[CLIENT] Shared secret established successfully.")
-
+        
         return shared_secret
 
     except Exception:
-        msg = public_key.decode("utf-8")
-        if(msg == "EXIT()"):
-            print("Socket with server is closing.")
+        msg_decoded = public_key.decode()
+        if msg_decoded == "Exit()":
+            print("[CLIENT] Received exit message.")
+            server_socket.send(bytes("Client terminated", "utf-8"))
             server_socket.close()
             exit()
+        # These solutions might be useless depending on how smart I am (not likely)
+        elif msg_decoded.startswith("IV|"):
+            iv = bytes.fromhex(msg_decoded.split("|")[1])
+            print(f"[CLIENT] received IV: {iv.hex()}")
+        elif msg_decoded.startswith("TAG|"):
+            tag = bytes.fromhex(msg_decoded.split("|")[1])
+            print(f"[CLIENT] received TAG: {tag.hex()}")
 
     return
 
 def decrypt_model(shared_secret):
     aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
 
-    wait_for_file("main_server_fed_encrypted.pt")
+    #wait_for_file("main_server_fed_encrypted.pt")
 
     with open("main_server_fed_encrypted.pt", "rb") as f:
         data = f.read()
 
-    iv, tag, ciphertext = data[:12], data[12:28], data[28:]  # Extract components
+    iv, ciphertext = data[:16], data[16:]  # Extract components
 
-    print(f"[CLIENT] tag: {tag}")
-    print(f"[CLIENT] iv: {iv}")
+    print(f"[CLIENT] received IV: {iv}")
 
-    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=iv)
-    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    plaintext = cipher.decrypt(ciphertext)
 
-    with open("main_server_fed.pt", "wb") as f:
+    with open("main_server_fedd.pt", "wb") as f:
         f.write(plaintext)
 
     print("[CLIENT] Model decrypted successfully.")
@@ -274,25 +279,28 @@ while True:
     ## Handle Connection
     # here is were we have communication with a socket back and forth
     # general key exchange handler but also handles messages
-    #shared_secret = kyber_key_exchange_client(client)
+    shared_secret = kyber_key_exchange_client(client)
 
-    msg = client.recv(1024)
-    msg_decoded = msg.decode("utf-8")
-    print(msg_decoded)
+    #msg = client.recv(1024)
+    #msg_decoded = msg.decode("utf-8")
+    #print(msg_decoded)
 
-    if(msg_decoded == "EXIT()"):
-        client.send(bytes("Client terminated", "utf-8"))
-        client.close()
-        exit()
+    #if(msg_decoded == "EXIT()"):
+     #   client.send(bytes("Client terminated", "utf-8"))
+      #  client.close()
+       # exit()
 
     client.send(bytes("Client recieved file from sever","utf-8"))
     client.close()
     # we close socket here
-
-    #decrypt_model(shared_secret)    
     
     ## Model Training
-    time.sleep(5)
+    time.sleep(20) # This is necessary because if client opens the file before receiving you have a massive problem
+    
+    decrypt_model(shared_secret)    
+
+    time.sleep(15)
+
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
     net_glob.load_state_dict(torch.load('main_server_fedd.pt'))
