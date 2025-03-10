@@ -309,7 +309,8 @@ if __name__ == '__main__':
     for idx in range(0, args.num_users):  
         clientsocket, address = server.accept() 
         print("connection from " + address[0] + " accepted.")
-        clientsocket.send(bytes("EXIT()", "utf-8"))    
+        exit_msg = "Exit()"
+        clientsocket.send(exit_msg.encode())    
         msg = clientsocket.recv(64)
         msg_decoded = msg.decode("utf-8")
         print(msg_decoded)

@@ -29,23 +29,34 @@ def kyber_key_exchange_server(client_socket):
     
     return shared_secret
 
-def encrypt_model(shared_secret, input_file, encrypted_file):
+def encrypt_model(shared_secret, input_file, encrypted_file, clientsocket):
     aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
 
-    iv = get_random_bytes(12)  # Generate IV (Nonce)
+    iv = get_random_bytes(16)  # Generate IV (Nonce)
 
     with open(input_file, "rb") as f:
         plaintext = f.read()
 
-    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=iv)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    ciphertext = cipher.encrypt(plaintext)
 
     print(f"[SERVER] iv: {iv}")
-    print(f"[SERVER] tag: {tag}")
+
+    # Sending IV
+    #clientsocket.send(f"IV|{[iv.hex()]}".encode())  
+    #time.sleep(0.1)
+    #print("IV sent successfully")
+
+    # Sending tag
+    #clientsocket.send(f"TAG|{tag.hex()}".encode())
+    #time.sleep(0.1)
+    #print("Tag sent successfully")
+
+    data_to_send = iv + ciphertext
 
     # Save IV + Tag + Ciphertext in one file
     with open(encrypted_file, "wb") as f:
-        f.write(iv + tag + ciphertext)
+        f.write(data_to_send)
 
     print("[SERVER] Model encrypted successfully.")
 
@@ -109,13 +120,15 @@ def Connection_handling(clientsocket, address):
         print(f"SSH client connected to {address[0]}.")
 
         # This shares the secret key
-        #shared_secret = kyber_key_exchange_server(clientsocket)
-        #encrypt_model(shared_secret, "models/main_server_fed_overall.pt", "models/main_server_fed_encrypted.pt")
+        shared_secret = kyber_key_exchange_server(clientsocket)
+        encrypt_model(shared_secret, "models/main_server_fed_overall.pt", "models/main_server_fed_encrypted.pt", clientsocket)
+        print("Exiting the encrypt model function")
 
+        time.sleep(10) # Sleeping 10 seconds to be sure that I am making it the full way
         # Call SendToClient to transfer the model file
         SendToClient(client=SSH_client, clientsocket=clientsocket, 
-                     file="models/main_server_fed_overall.pt", #Changed from main_server_fed_encrypted to default 
-                     filepath="C:/Users/garrettssh2/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/main_server_fedd.pt",
+                     file="models/main_server_fed_encrypted.pt", #Changed from main_server_fed_encrypted to default 
+                     filepath="C:/Users/garrettssh2/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/main_server_fed_encrypted.pt",
                      message="Server: Sent file to client")
 
         # Closing SSH client
