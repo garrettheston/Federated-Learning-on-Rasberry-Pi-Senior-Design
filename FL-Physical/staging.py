@@ -52,13 +52,6 @@ def kyber_key_exchange_client(server_socket):
             server_socket.send(bytes("Client terminated", "utf-8"))
             server_socket.close()
             exit()
-        # These solutions might be useless depending on how smart I am (not likely)
-        elif msg_decoded.startswith("IV|"):
-            iv = bytes.fromhex(msg_decoded.split("|")[1])
-            print(f"[CLIENT] received IV: {iv.hex()}")
-        elif msg_decoded.startswith("TAG|"):
-            tag = bytes.fromhex(msg_decoded.split("|")[1])
-            print(f"[CLIENT] received TAG: {tag.hex()}")
 
     return
 
@@ -81,6 +74,26 @@ def decrypt_model(shared_secret):
         f.write(plaintext)
 
     print("[CLIENT] Model decrypted successfully.")
+
+def encrypt_model(shared_secret,input_file,encrypted_file):
+    aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+
+    iv = get_random_bytes(16)
+
+    with open(input_file, "rb") as f:
+        plaintext = f.read()
+    
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    ciphertext = cipher.encrypt(plaintext)
+
+    print(f"[SERVER] iv: {iv}")
+
+    data_to_send = iv + ciphertext
+
+    with open(encrypted_file, "wb") as f:
+        f.write(data_to_send)
+
+    print("[SERVER] Model encrypted successfully.")
 
 def wait_for_file(filename, timeout=10):
     start_time = time.time()
@@ -245,6 +258,8 @@ for line in f:
 
 f.close()
 
+shared_secret = 0
+
 while True:
 
 
@@ -281,15 +296,6 @@ while True:
     # general key exchange handler but also handles messages
     shared_secret = kyber_key_exchange_client(client)
 
-    #msg = client.recv(1024)
-    #msg_decoded = msg.decode("utf-8")
-    #print(msg_decoded)
-
-    #if(msg_decoded == "EXIT()"):
-     #   client.send(bytes("Client terminated", "utf-8"))
-      #  client.close()
-       # exit()
-
     client.send(bytes("Client recieved file from sever","utf-8"))
     client.close()
     # we close socket here
@@ -311,6 +317,11 @@ while True:
     # Save the model dictionary/parameters
     torch.save(state_dict, 'main_server_fed_'+CLIENT_ID+'.pt')
 
+    time.sleep(5)
+
+    encrypt_model(shared_secret, 'main_server_fed_'+CLIENT_ID+'.pt', 'main_server_fed_'+CLIENT_ID+'_protected.pt')
+
+    time.sleep(2)
 
     # Define your server credentials and file path
     username = SERVER_NAME  # username of central server
@@ -331,8 +342,8 @@ while True:
         # If connected, proceed with sending the file
         print(f"Preparing to send file: main_server_fed_{CLIENT_ID}.pt")
         SendToServer(server=server_SSH,
-                    file="main_server_fed_" + CLIENT_ID + ".pt",
-                    filepath=file_path + "main_server_fed_" + CLIENT_ID + ".pt",
+                    file="main_server_fed_" + CLIENT_ID + "_protected.pt",
+                    filepath=file_path + "main_server_fed_" + CLIENT_ID + "_protected.pt",
                     message="sent file")
         print(f"File sent successfully to {SERVER}.")
         
