@@ -33,6 +33,10 @@ import time as t
 #from opacus.validators import ModuleValidator
 from torch.utils.data import Dataset, DataLoader
 from models.server_ssh import Connection_handling
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Protocol.KDF import HKDF
+from Crypto.Hash import SHA256
 
 import paramiko
 from scp import SCPClient
@@ -108,12 +112,44 @@ def adjustPB(PBList, accList):
         i -= 1
     print(newPB)
     return newPB
-        
 
+def decrypt_model(secret,file):
+    aes_key = HKDF(master = secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+
+    with open(file, 'rb') as f:
+        data = f.read()
+
+    iv, ciphertext = data[:16], data[16:]
+
+    print(f"[SERVER] received IV for decryption: {iv}")
+
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    plaintext = cipher.decrypt(ciphertext)
+
+    with open(file, 'wb') as f:
+        f.write(plaintext)
+
+    print(f"[SERVER] Model decryption successful. Finished writing to {file} following decryption")
+
+def wait_for_complete_file(file_path, timeout=30, check_interval=2):
+    prev_size = -1
+    elapsed_time = 0
+    while elapsed_time < timeout:
+        try:
+            current_size = os.path.getsize(file_path)
+            if current_size == prev_size:  # File size is stable
+                return True
+            prev_size = current_size
+        except FileNotFoundError:
+            pass  # File might not have been fully written yet
+        time.sleep(check_interval)
+        elapsed_time += check_interval
+    return False  # Timeout reached
 
 if __name__ == '__main__':
     f = open("config_server.txt", "r")
     lineCount = 0
+    shared_secret = 0
     for line in f:
         currentLine = line.strip('\n').split("=")
         print(currentLine)
@@ -225,15 +261,26 @@ if __name__ == '__main__':
             print("In for loop :)")
             clientsocket, address = server.accept() 
             print("connection from " + address[0] + " accepted.")
-            Connection_handling(clientsocket, address)
+            shared_secret = Connection_handling(clientsocket, address)
 
         #Wait for all client models to be received
         modelFolder = MODELFOLDER
         fileCount = 0
+        data = ""
         while (fileCount != args.num_users):
             for file in os.scandir(modelFolder):
                 if file.is_file():
+                    filePath = file.path
+
+                    # The file should originally be main_server_fed_{num}_protected.pt
+                    # Then the file should be changed to {decrypted}
+                    print(f"Waiting for file {filePath} to be fully received....")
+                    wait_for_complete_file(filePath)
+
+                    print(f"File {filePath} fully received. Decrypting...")
+                    decrypt_model(shared_secret, filePath)
                     fileCount += 1
+                    
 
         print("Epoch: ", iter)
         loss_locals = []
@@ -253,10 +300,10 @@ if __name__ == '__main__':
             File_in_use = True
             while File_in_use:
                 try:
-                    checkpoint = torch.load('Pi_models/main_server_fed_{}.pt'.format(idx), map_location=torch.device('cpu'))
+                    checkpoint = torch.load('Pi_models/main_server_fed_{}_protected.pt'.format(idx), map_location=torch.device('cpu'))
                     File_in_use = False
                 except:
-                    print('Pi_models/main_server_fed_{}.pt being written currently'.format(idx))
+                    print('Pi_models/main_server_fed_{}_protected.pt being written currently'.format(idx))
                     time.sleep(4)
                     File_in_use = True
             net_glob.load_state_dict(checkpoint)

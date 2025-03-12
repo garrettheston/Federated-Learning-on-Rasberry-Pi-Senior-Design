@@ -42,16 +42,6 @@ def encrypt_model(shared_secret, input_file, encrypted_file, clientsocket):
 
     print(f"[SERVER] iv: {iv}")
 
-    # Sending IV
-    #clientsocket.send(f"IV|{[iv.hex()]}".encode())  
-    #time.sleep(0.1)
-    #print("IV sent successfully")
-
-    # Sending tag
-    #clientsocket.send(f"TAG|{tag.hex()}".encode())
-    #time.sleep(0.1)
-    #print("Tag sent successfully")
-
     data_to_send = iv + ciphertext
 
     # Save IV + Tag + Ciphertext in one file
@@ -134,6 +124,7 @@ def Connection_handling(clientsocket, address):
         # Closing SSH client
         print("Closing SSH client connection.")
         SSH_client.close()
+        return shared_secret
     
     except Exception as e:
         print(f"Error in Connection_handling: {e}")
