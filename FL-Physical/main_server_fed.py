@@ -32,7 +32,7 @@ import torchvision
 import time as t
 #from opacus.validators import ModuleValidator
 from torch.utils.data import Dataset, DataLoader
-from models.server_ssh import Connection_handling
+from models.server_ssh import Connection_handling, hash_file
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import HKDF
@@ -43,6 +43,7 @@ from scp import SCPClient
 import socket
 import time
 import threading
+import hashlib
 
 class CustomDataset(Dataset):
     def __init__(self, data_tensor):
@@ -119,7 +120,7 @@ def decrypt_model(secret,file):
     with open(file, 'rb') as f:
         data = f.read()
 
-    iv, ciphertext = data[:16], data[16:]
+    client_sha256, iv, ciphertext = data[:32], data[32:48], data[48:]
 
     print(f"[SERVER] received IV for decryption: {iv}")
 
@@ -129,7 +130,16 @@ def decrypt_model(secret,file):
     with open(file, 'wb') as f:
         f.write(plaintext)
 
+    server_based_sha256 = hash_file(file)
+
+    if client_sha256 == server_based_sha256.digest():
+        print(f"hash has succeeded.")
+    else:
+        print(f"security incident")
+
     print(f"[SERVER] Model decryption successful. Finished writing to {file} following decryption")
+    
+    return client_sha256
 
 def wait_for_complete_file(file_path, timeout=30, check_interval=2):
     prev_size = -1
@@ -279,6 +289,7 @@ if __name__ == '__main__':
 
                     print(f"File {filePath} fully received. Decrypting...")
                     decrypt_model(shared_secret, filePath)
+
                     fileCount += 1
                     
 
@@ -348,9 +359,6 @@ if __name__ == '__main__':
         #Remove all previous models for new ones to come in
         for file in os.scandir(modelFolder):
             os.remove(file)
-
-            
-
 
     # Final Connection Handling to terminate clients
     for idx in range(0, args.num_users):  

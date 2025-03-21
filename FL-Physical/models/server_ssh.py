@@ -16,8 +16,10 @@ def kyber_key_exchange_server(client_socket):
     
     public_key, secret_key = ML_KEM_512.keygen()
     
+    # from the time server sends public key to the time that the client creates shared secret
+
     client_socket.sendall(public_key)
-    print("Sent public key")
+    print("[SERVER] Sent public key")
     
     ciphertext = client_socket.recv(4096)
 
@@ -29,8 +31,12 @@ def kyber_key_exchange_server(client_socket):
     
     return shared_secret
 
-def encrypt_model(shared_secret, input_file, encrypted_file, clientsocket):
+def encrypt_model(shared_secret, input_file, encrypted_file, sha256):
     aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+
+    # from the time of server first encryption to end of decryption for client
+
+    print("[SERVER] Encryption begins for model")
 
     iv = get_random_bytes(16)  # Generate IV (Nonce)
 
@@ -42,13 +48,20 @@ def encrypt_model(shared_secret, input_file, encrypted_file, clientsocket):
 
     print(f"[SERVER] iv: {iv}")
 
-    data_to_send = iv + ciphertext
+    data_to_send = sha256.digest() + iv + ciphertext
 
     # Save IV + Tag + Ciphertext in one file
     with open(encrypted_file, "wb") as f:
         f.write(data_to_send)
 
     print("[SERVER] Model encrypted successfully.")
+
+def hash_file(file_path):
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(4096):  # Read in chunks
+            sha256.update(chunk)
+    return sha256
 
 def SendToClient(client, clientsocket, file="", filepath="", message=""):
     try:
@@ -109,9 +122,11 @@ def Connection_handling(clientsocket, address):
         SSH_client.connect(address[0], username=CLIENT_USRNM, password=CLIENT_PSWD)
         print(f"SSH client connected to {address[0]}.")
 
+        sha256 = hash_file("models/main_server_fed_overall.pt") # 32 bytes long
+
         # This shares the secret key
         shared_secret = kyber_key_exchange_server(clientsocket)
-        encrypt_model(shared_secret, "models/main_server_fed_overall.pt", "models/main_server_fed_encrypted.pt", clientsocket)
+        encrypt_model(shared_secret, "models/main_server_fed_overall.pt", "models/main_server_fed_encrypted.pt", sha256)
         print("Exiting the encrypt model function")
 
         time.sleep(10) # Sleeping 10 seconds to be sure that I am making it the full way
