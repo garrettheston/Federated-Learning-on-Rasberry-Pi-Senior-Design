@@ -53,6 +53,8 @@ def kyber_key_exchange_client(server_socket):
             server_socket.close()
             exit()
 
+    print("[CLIENT] created shared secret")
+
     return
 
 def decrypt_model(shared_secret):
@@ -60,10 +62,12 @@ def decrypt_model(shared_secret):
 
     #wait_for_file("main_server_fed_encrypted.pt")
 
+    print(f"[CLIENT] Model is beginning decryption")
+
     with open("main_server_fed_encrypted.pt", "rb") as f:
         data = f.read()
 
-    iv, ciphertext = data[:16], data[16:]  # Extract components
+    sha256, iv, ciphertext = data[:32], data[32:48], data[48:]  # Extract components and hash
 
     print(f"[CLIENT] received IV: {iv}")
 
@@ -74,8 +78,10 @@ def decrypt_model(shared_secret):
         f.write(plaintext)
 
     print("[CLIENT] Model decrypted successfully.")
+    
+    return sha256
 
-def encrypt_model(shared_secret,input_file,encrypted_file):
+def encrypt_model(shared_secret,input_file,encrypted_file, sha256):
     aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
 
     iv = get_random_bytes(16)
@@ -88,7 +94,7 @@ def encrypt_model(shared_secret,input_file,encrypted_file):
 
     print(f"[SERVER] iv: {iv}")
 
-    data_to_send = iv + ciphertext
+    data_to_send = sha256.digest() + iv + ciphertext
 
     with open(encrypted_file, "wb") as f:
         f.write(data_to_send)
@@ -104,6 +110,13 @@ def wait_for_file(filename, timeout=10):
         print(f"Waiting for {filename} to become accessible...")
         time.sleep(0.5)  # Wait 500ms before checking again
     raise TimeoutError(f"File {filename} is not accessible after {timeout} seconds.")
+
+def hash_file(file_path):
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(4096):
+            sha256.update(chunk)
+    return sha256
 
 def test(net_g, data_loader, args):
     # testing
@@ -303,9 +316,16 @@ while True:
     ## Model Training
     time.sleep(20) # This is necessary because if client opens the file before receiving you have a massive problem
     
-    decrypt_model(shared_secret)    
+    server_sha256 = decrypt_model(shared_secret)    
 
-    time.sleep(15)
+    time.sleep(5)
+
+    client_sha256 = hash_file("main_server_fedd.pt") # generate hash with decrypted model and then compare
+
+    if server_sha256 == client_sha256.digest():
+        print("[CLIENT] passed model update")
+    else:
+        print("[CLIENT] security incident: hash failed")
 
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
@@ -319,7 +339,9 @@ while True:
 
     time.sleep(5)
 
-    encrypt_model(shared_secret, 'main_server_fed_'+CLIENT_ID+'.pt', 'main_server_fed_'+CLIENT_ID+'_protected.pt')
+    client_based_sha256 = hash_file("main_server_fed_"+CLIENT_ID+".pt")
+
+    encrypt_model(shared_secret, 'main_server_fed_'+CLIENT_ID+'.pt', 'main_server_fed_'+CLIENT_ID+'_protected.pt', client_based_sha256)
 
     time.sleep(2)
 
