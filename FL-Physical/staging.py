@@ -128,7 +128,7 @@ class Args:
         self.local_bs = 128
         self.lr = 0.01
         self.momentum = 0.9
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = 'cpu'
         self.verbose = True
         self.local_ep = 1
         #self.client_id = 1
@@ -219,7 +219,7 @@ while True:
     time.sleep(5)
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
-    net_glob.load_state_dict(torch.load('main_server_fed.pt'))
+    net_glob.load_state_dict(torch.load('main_server_fed.pt', map_location=torch.device('cpu')))
     # Call training function
     print("\nTraining...")
     state_dict, avg_loss, lossPerEpoch = local_update.train(net_glob)
