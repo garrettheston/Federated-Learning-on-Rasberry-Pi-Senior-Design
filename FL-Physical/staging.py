@@ -100,6 +100,21 @@ def decrypt_model(shared_secret):
 
     print("[CLIENT] Model decrypted successfully.")
 
+def encrypt_model(shared_secret,input_file):
+    
+    aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+    iv = get_random_bytes(16)
+    with open(input_file, "rb") as f:
+        plaintext = f.read()
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    ciphertext = cipher.encrypt(plaintext)
+    print(f"[SERVER] iv: {iv}")
+    data_to_send = iv + ciphertext
+    with open(input_file, "wb") as f:
+        f.write(data_to_send)
+
+    print("[SERVER] Model encrypted successfully.")
+
 def wait_for_file(filename, timeout=15):
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -289,6 +304,8 @@ while True:
     print("Training Finished")
     # Save the model dictionary/parameters
     torch.save(state_dict, 'main_server_fed_'+CLIENT_ID+'.pt')
+
+    encrypt_model(shared_secret, "main_server_fed_"+CLIENT_ID+".pt")
 
     ## Send Model
     # Here is only sending the model back
