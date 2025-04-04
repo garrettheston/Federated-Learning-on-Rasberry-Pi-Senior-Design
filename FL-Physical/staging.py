@@ -122,7 +122,7 @@ def wait_for_file(filename, timeout=15):
             print("Access is true")
             return True
         print(f"Waiting for {filename} to become accessible")
-        time.sleep(12)
+        time.sleep(15)
     raise TimeoutError(f"File {filename} is not accessible after {timeout} seconds.")
 
 class DatasetSplit(Dataset):
@@ -291,7 +291,9 @@ while True:
     shared_secret = traffic_handling(serversocket, int(CLIENT_ID))
     
     ## Model Training
-    wait_for_file("main_server_fed.pt")
+    #wait_for_file("main_server_fed.pt")
+
+    time.sleep(30)
 
     decrypt_model(shared_secret)
 
