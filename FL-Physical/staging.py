@@ -1,11 +1,7 @@
-#includes
 import paramiko
 from scp import SCPClient
 import socket
 import time
-#import matplotlib
-#matplotlib.use('Agg')
-#import matplotlib.pyplot as plt
 import copy
 import numpy as np
 from torchvision import datasets, transforms
@@ -14,6 +10,7 @@ import torchvision
 from torch.utils.data import Dataset,DataLoader, random_split
 import torch.nn.functional as F
 from torch import nn
+from kyber_py.ml_kem import ML_KEM_512
 import random
 
 def test(net_g, data_loader, args):
@@ -36,6 +33,52 @@ def test(net_g, data_loader, args):
 
     return accuracy, loss
     
+def traffic_handling(server_socket, client_id):
+   
+    # Receive the public key with the label
+    public_key_with_label = server_socket.recv(4096)
+   
+    # Check for the "EXCHANGE:" label
+    label = b"EXCHANGE:"  # The expected label from the server
+   
+    if public_key_with_label.startswith(label):
+        # Extract the actual public key (remove the label)
+        public_key = public_key_with_label[len(label):]
+        print("[CLIENT] Public key received successfully.")
+       
+        try:
+            # Encapsulate shared secret
+            shared_secret, ciphertext = ML_KEM_512.encaps(public_key)
+            print("[CLIENT] Here is the ciphertext: ", ciphertext)
+            print("[CLIENT] Here is the shared secret key derived from the server", shared_secret.hex())
+
+            data = client_id.to_bytes(1,byteorder='big') + ciphertext
+            # Send ciphertext
+            server_socket.sendall(data)
+           
+            return shared_secret
+
+        except Exception as e:
+            print(f"[CLIENT] Error during key exchange: {e}")
+            return
+
+    else:
+        # If the label doesn't match, check for an "EXIT()" message
+        msg_decoded = public_key_with_label.decode()  # Decode the received message
+        if msg_decoded == "EXIT()":
+            print("[CLIENT] Received exit message.")
+            server_socket.send(bytes("Client terminated", "utf-8"))
+            server_socket.close()
+            exit()
+        else:
+            print("[CLIENT] Error: Public key does not start with the expected label or invalid message.")
+            server_socket.close()
+            exit()
+
+    print("[CLIENT] created shared secret")
+
+    return
+
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
         self.dataset = dataset
@@ -94,7 +137,6 @@ class LocalUpdate(object):
             train_accuracy, train_loss = test(net, self.ldr_train, self.args)
         return net.state_dict(), sum(epoch_loss) / len(epoch_loss), epoch_loss
 
-
 def SendToServer(server, file = "",filepath = "",message = ""):
  #   try:
     with SCPClient(server.get_transport()) as scp_Client:
@@ -121,7 +163,6 @@ random.seed(42)
 torch.manual_seed(42)
 dataset_train, dataset_test = random_split(dataset, [train_count, test_count])
 
-
 #Defining arguments
 class Args:
     def __init__(self):
@@ -135,7 +176,6 @@ class Args:
         #self.ServerName = "ServerUsername"
         #self.ServerPassword = "ServerPassword"
 args = Args()
-
 
 # Read in the config file
 f = open("config.txt", "r")
@@ -185,14 +225,14 @@ while True:
     net_glob.to(args.device)
 ##
 
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Searching_connection = True
     while Searching_connection:
         try:
             #connect here ##############
             #PORT = 4045          
             #SERVER = "10.4.130.19"
-            client.connect((SERVER, PORT))
+            serversocket.connect((SERVER, PORT))
             Searching_connection = False
 
         except:
@@ -202,21 +242,10 @@ while True:
     
     ## Handle Connection
     # here is were we have communication with a socket back and forth
-    msg = client.recv(1024)
-    msg_decoded = msg.decode("utf-8")
-    print(msg_decoded)
-
-    if(msg_decoded == "EXIT()"):
-        client.send(bytes("Client-"+CLIENT_ID+" terminated","utf-8"))
-        client.close()
-        exit()
-    
-    client.send(bytes("Client recieved file from sever","utf-8"))
-    client.close()
-    # we close socket here        
+    shared_secret = traffic_handling(serversocket, int(CLIENT_ID))
     
     ## Model Training
-    time.sleep(5)
+    time.sleep(15)
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
     net_glob.load_state_dict(torch.load('main_server_fed.pt', map_location=torch.device('cpu')))
@@ -226,8 +255,6 @@ while True:
     print("Training Finished")
     # Save the model dictionary/parameters
     torch.save(state_dict, 'main_server_fed_'+CLIENT_ID+'.pt')
-
-
 
     ## Send Model
     # Here is only sending the model back
