@@ -30,12 +30,18 @@ import torchvision
 import time as t
 #from opacus.validators import ModuleValidator
 from torch.utils.data import Dataset, DataLoader
-from models.server_ssh import Connection_handling
-import paramiko
+from Connection_Handle import Connection_handling
 from scp import SCPClient
 import socket
 import time
-import threading
+
+# Steps for tonight
+# Get rid of config files that are being read (takes too much space)
+
+# All clients are going to have a shared key with the server that's generated from the key encapsulation mechanism (KEM) perfect forward secrecy
+# Therefore, the server needs to have an array that contains each respective clients' shared key
+# Therefore, need the array to correspond to each client (even if they send it and receive it out of order)
+# (Also) therefore, I need to have an integer representation of the ID from the client sent that prepends this and then I can assign it into the array
 
 class CustomDataset(Dataset):
     def __init__(self, data_tensor):
@@ -50,95 +56,19 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx], self.targets[idx]
     
-def IMU_noniid(dataset, num_users,labels):
-    """
-    Sample non-I.I.D client data from IMU dataset 
-    Altered from Mnist_noniid definition
-    :param dataset:
-    :param num_users:
-    :return:
-    """
-    # 60,000 training imgs -->  200 imgs/shard X 300 shards
-    num_shards, num_imgs = 90, 10
-    idx_shard = [i for i in range(num_shards)]
-    dict_users = {i: np.array([]) for i in range(num_users)}
-    idxs = np.arange(num_shards*num_imgs)
-    #labels = dataset.train_labels.numpy()
-
-    # sort labels
-    idxs_labels = np.vstack((idxs, labels))
-    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
-    idxs = idxs_labels[0, :]
-
-    # divide and assign 2 shards/client
-    for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 30, replace=False))
-        idx_shard = list(set(idx_shard) - rand_set)
-        for rand in rand_set:
-            dict_users[i] = np.concatenate(
-                (dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0)
-        dict_users[i] = [int(x) for x in dict_users[i]]
-    return dict_users
-
-#Define function to adjust Privacy Budget
-def adjustPB(PBList, accList):
-    print(PBList)
-    newAcc = []
-    newPB = PBList.copy()
-    newAcc = accList.copy()
-    newAcc.sort()
-    i = len(newAcc)
-    indexList = []
-    for item in newAcc: 
-        index = accList.index(item)
-        if (index in indexList):
-            accList[index] = 0
-        index = accList.index(item)
-        indexList.append(index)
-        print(index)
-        newPB[index] = newPB[index] - (0.1*i)
-        #Set some bounds
-        if (newPB[index] > 2):
-            newPB[index] = 2
-        if (newPB[index] < 0.7):
-            newPB[index] = 0.7
-        i -= 1
-    print(newPB)
-    return newPB
-    
 if __name__ == '__main__':
-    f = open("config_server.txt", "r")
-    lineCount = 0
-    for line in f:
-        currentLine = line.strip('\n').split("=")
-        print(currentLine)
-
-        if currentLine[0] == 'NUM_CLIENTS':
-            NUM_CLIENTS = currentLine[1]
-            NUM_CLIENTS = int(NUM_CLIENTS)
-        
-        if currentLine[0] == 'SERVER_PORT':
-            PORT = currentLine[1]
-            PORT = int(PORT)
-
-        if currentLine[0] == 'SERVER_IP':
-            SERVER = currentLine[1]
-
-        if currentLine[0] == 'MODELFOLDER':
-            MODELFOLDER = currentLine[1] 
-        
-        if currentLine[0] == 'NUM_gl_EPOCHS':
-            NUM_gl_EPOCHS = currentLine[1] 
-            NUM_gl_EPOCHS = int(NUM_gl_EPOCHS)      
-
-        
-        lineCount += 1
-
-    f.close()
+    
     # parse args
     args = args_parser()
     args.device = torch.device('cpu')
     ################## args def for testing
+
+    NUM_CLIENTS = 1
+    NUM_gl_EPOCHS = 2
+    PORT = 4045
+    SERVER = '10.0.0.51'
+    MODELFOLDER = r"C:\\Users\\garrettssh\\Downloads\\Federated-Learning-on-Rasberry-Pi-Senior-Design\\FL-Physical\\Pi_models"
+
     args.num_users = NUM_CLIENTS
     args.epochs = NUM_gl_EPOCHS
     args.dataset = 'HAR_LS' 
@@ -207,17 +137,20 @@ if __name__ == '__main__':
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((host,port))
     server.listen(args.num_users) 
-        
+    
+    # This stores the fixed number of clients shared keys
+    shared_keys = np.zeros(1)
+
     for iter in range(args.epochs):
 
-        #Distribute the model to all clients
+        #Distribute the model to all clients server -> client
         for idx in range(0, args.num_users):
             print("In for loop :)")
             clientsocket, address = server.accept() 
             print("connection from " + address[0] + " accepted.")
             Connection_handling(clientsocket, address)
 
-        #Wait for all client models to be received
+        #Wait for all client models to be received (all clients) -> server
         modelFolder = MODELFOLDER
         fileCount = 0
         while (fileCount != args.num_users):
@@ -236,7 +169,7 @@ if __name__ == '__main__':
         
         accuracyList = []
         #for idx in idxs_users:
-        for idx in range(1, args.num_users+1):
+        for idx in range(1, args.num_users+1): # Loop trains all the models in the model folder
             print(" User: " , idx)
             
            # 'fed_{}_{}_{}_C{}_Non_iid{}_DP_3_clients.png'.format(args.dataset)
@@ -259,8 +192,6 @@ if __name__ == '__main__':
             else:
                 w_locals.append(copy.deepcopy(localModel))
             #loss_locals.append(copy.deepcopy(loss))
-
-        #print("Epsilon List: ", epsList)
 
         # update global weights
         if args.global_aggr == 'FedAvg':
@@ -289,7 +220,7 @@ if __name__ == '__main__':
         for file in os.scandir(modelFolder):
             os.remove(file)
             
-    # Final Connection Handling to terminate clients
+    # Final Connection Handling to terminate clients server exit -> all client
     for idx in range(0, args.num_users):  
         clientsocket, address = server.accept() 
         print("connection from " + address[0] + " accepted.")
