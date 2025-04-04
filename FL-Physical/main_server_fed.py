@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# Python version: 3.6
 import random
 import matplotlib
 matplotlib.use('Agg')
@@ -35,6 +32,7 @@ from Crypto_Utils import kyber_key_exchange_server, encrypt_model, decrypt_model
 from scp import SCPClient
 import socket
 import time
+import threading
 
 class CustomDataset(Dataset):
     def __init__(self, data_tensor):
@@ -48,7 +46,36 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx], self.targets[idx]
-    
+
+def handle_client(idx, server, net_glob):
+    try:
+
+        clientsocket, address = server.accept()  # Accepting the connection to handle the client
+        print("Connection from " + address[0] + " accepted.")
+        shared_key, client_id = kyber_key_exchange_server(clientsocket)
+        
+        encrypt_model(shared_key, "models/main_server_fed_overall.pt", "models/main_server_fed_protected.pt")  # Encrypt model and send it
+        connection_handling(clientsocket, address, client_id)
+        wait_for_complete_file(f"Pi_models/main_server_fed_{idx}.pt")
+        decrypt_model(shared_key, f"Pi_models/main_server_fed_{idx}.pt")
+        
+        checkpoint = torch.load(f'Pi_models/main_server_fed_{idx}.pt', map_location=torch.device('cpu'))
+
+        # Load the received model into the global model (net_glob)
+        net_glob.load_state_dict(checkpoint)
+        
+        # Prepare the model for local training or updates
+        localModel = net_glob.state_dict()
+
+        # Append to local weights (w_locals) based on client configuration
+        if args.all_clients:
+            w_locals[idx] = copy.deepcopy(localModel)
+        else:
+            w_locals.append(copy.deepcopy(localModel))
+
+    except Exception as e:
+        print(f"Error in client {idx}: {e}")
+
 if __name__ == '__main__':
     
     # parse args
@@ -56,7 +83,7 @@ if __name__ == '__main__':
     args.device = torch.device('cpu')
     ################## args def for testing
 
-    NUM_CLIENTS = 1
+    NUM_CLIENTS = 2
     NUM_gl_EPOCHS = 2
     PORT = 4045
     SERVER = '10.0.0.51'
@@ -133,6 +160,8 @@ if __name__ == '__main__':
     shared_keys = ["" for _ in range(NUM_CLIENTS)] # Save this for later because it's not working :(
     # Maybe multithreading is an alternative to using a list?
 
+    threads = []
+
     for iter in range(args.epochs):
         print("Epoch: ", iter)
         
@@ -150,32 +179,13 @@ if __name__ == '__main__':
         for idx in range(1, args.num_users + 1):  # Loop trains all the models in the model folder
             
             print("User:", idx)
-            clientsocket, address = server.accept() # Accepting the connection to handle the client
-            print("Connection from " + address[0] + " accepted.")
-            shared_key, client_id = kyber_key_exchange_server(clientsocket)
-            encrypt_model(shared_key, "models/main_server_fed_overall.pt", "models/main_server_fed_protected.pt") # encrypt model and send it (server -> clients)
-            connection_handling(clientsocket, address)
+            thread = threading.Thread(target=handle_client, args=(idx, server, net_glob))
+            threads.append(thread)
+            thread.start()
 
-            wait_for_complete_file(f"Pi_models/main_server_fed_{idx}.pt")
-            
-            decrypt_model(shared_key, f"Pi_models/main_server_fed_{idx}.pt")
-            
-            checkpoint = torch.load(f'Pi_models/main_server_fed_{idx}.pt', map_location=torch.device('cpu'))
-
-            # Load the received model into the global model (net_glob)
-            net_glob.load_state_dict(checkpoint)
-            
-            # Prepare the model for local training or updates
-            localModel = net_glob.state_dict()
-
-            # Append to local weights (w_locals) based on client configuration
-            if args.all_clients:
-                w_locals[idx] = copy.deepcopy(localModel)
-            else:
-                w_locals.append(copy.deepcopy(localModel))
-            
-            # Optionally add loss calculation here if required for local models
-            # loss_locals.append(copy.deepcopy(loss))
+        # Wait for all threads to finish
+        for thread in threads:
+            thread.join()
 
         # After all models have been processed, update global weights using FedAvg
         if args.global_aggr == 'FedAvg':
