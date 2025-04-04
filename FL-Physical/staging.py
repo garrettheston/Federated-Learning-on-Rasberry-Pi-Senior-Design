@@ -11,6 +11,10 @@ from torch.utils.data import Dataset,DataLoader, random_split
 import torch.nn.functional as F
 from torch import nn
 from kyber_py.ml_kem import ML_KEM_512
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Protocol.KDF import HKDF
+from Crypto.Hash import SHA256
 import random
 
 def test(net_g, data_loader, args):
@@ -79,6 +83,22 @@ def traffic_handling(server_socket, client_id):
 
     return
 
+def decrypt_model(shared_secret):
+    
+    aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+    
+    print(f"[CLIENT] Model is beginning decryption")
+    with open("main_server_fed.pt", "rb") as f:
+        data = f.read()
+    iv, ciphertext = data[:16], data[16:]  # Extract components and hash
+    print(f"[CLIENT] received IV: {iv}")
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    plaintext = cipher.decrypt(ciphertext)
+    with open("main_server_fed.pt", "wb") as f:
+        f.write(plaintext)
+
+    print("[CLIENT] Model decrypted successfully.")
+    
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
         self.dataset = dataset
@@ -246,6 +266,11 @@ while True:
     
     ## Model Training
     time.sleep(15)
+
+    decrypt_model(shared_secret)
+
+    time.sleep(1)
+
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
     net_glob.load_state_dict(torch.load('main_server_fed.pt', map_location=torch.device('cpu')))
