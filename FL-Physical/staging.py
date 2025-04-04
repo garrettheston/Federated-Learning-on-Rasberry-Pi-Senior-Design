@@ -241,7 +241,7 @@ while True:
     server_SSH.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     server_SSH.connect(SERVER, username=username, password=password)
     SendToServer(server=server_SSH,file="main_server_fed_"+CLIENT_ID+".pt",
-                filepath=file_path+"main_server_fed_"+CLIENT_ID+".pt",
+                filepath="C:/Users/garrettssh/Downloads/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/main_server_fed_"+CLIENT_ID+".pt",
                 message="sent file")
 
 
