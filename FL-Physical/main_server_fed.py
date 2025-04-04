@@ -30,18 +30,11 @@ import torchvision
 import time as t
 #from opacus.validators import ModuleValidator
 from torch.utils.data import Dataset, DataLoader
-from Connection_Handle import Connection_handling
+from Connection_Handle import connection_handling
+from Crypto_Utils import kyber_key_exchange_server, encrypt_model, decrypt_model, wait_for_complete_file
 from scp import SCPClient
 import socket
 import time
-
-# Steps for tonight
-# Get rid of config files that are being read (takes too much space)
-
-# All clients are going to have a shared key with the server that's generated from the key encapsulation mechanism (KEM) perfect forward secrecy
-# Therefore, the server needs to have an array that contains each respective clients' shared key
-# Therefore, need the array to correspond to each client (even if they send it and receive it out of order)
-# (Also) therefore, I need to have an integer representation of the ID from the client sent that prepends this and then I can assign it into the array
 
 class CustomDataset(Dataset):
     def __init__(self, data_tensor):
@@ -120,9 +113,7 @@ if __name__ == '__main__':
     val_acc_list, net_list = [], []
 
     clientAddresses = []
-
-    file1 = open("output_FL_Resnet_HAR.txt", "w") 
-
+    file1 = open("output_FL_Resnet_HAR.txt", "w")
     epsList = [ ]
 
     if args.all_clients: 
@@ -133,13 +124,14 @@ if __name__ == '__main__':
     host = SERVER
     port = PORT
 
-   # set up TCP socket connection for server 
+    # set up TCP socket connection for server 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((host,port))
-    server.listen(args.num_users) 
+    server.listen(args.num_users)
     
     # This stores the fixed number of clients shared keys
-    shared_keys = np.zeros(1)
+    shared_keys = ["" for _ in range(NUM_CLIENTS)] # Save this for later because it's not working :(
+    # Maybe multithreading is an alternative to using a list?
 
     for iter in range(args.epochs):
         print("Epoch: ", iter)
@@ -156,24 +148,20 @@ if __name__ == '__main__':
         
         # Handle each client in one loop: distributing and receiving the model
         for idx in range(1, args.num_users + 1):  # Loop trains all the models in the model folder
+            
             print("User:", idx)
-            
-            # Accept connection and handle the client
-            clientsocket, address = server.accept()
+            clientsocket, address = server.accept() # Accepting the connection to handle the client
             print("Connection from " + address[0] + " accepted.")
-            Connection_handling(clientsocket, address)
+            shared_key, client_id = kyber_key_exchange_server(clientsocket)
+            encrypt_model(shared_key, "models/main_server_fed_overall.pt", "models/main_server_fed_protected.pt") # encrypt model and send it (server -> clients)
+            connection_handling(clientsocket, address)
 
-            # Wait for the client model to be received (server -> client)
-            File_in_use = True
-            while File_in_use:
-                try:
-                    checkpoint = torch.load(f'Pi_models/main_server_fed_{idx}.pt', map_location=torch.device('cpu'))
-                    File_in_use = False
-                except:
-                    print(f'Pi_models/main_server_fed_{idx}.pt being written currently')
-                    time.sleep(4)
-                    File_in_use = True
+            wait_for_complete_file(f"Pi_models/main_server_fed_{idx}.pt")
             
+            decrypt_model(shared_key, f"Pi_models/main_server_fed_{idx}.pt")
+            
+            checkpoint = torch.load(f'Pi_models/main_server_fed_{idx}.pt', map_location=torch.device('cpu'))
+
             # Load the received model into the global model (net_glob)
             net_glob.load_state_dict(checkpoint)
             
