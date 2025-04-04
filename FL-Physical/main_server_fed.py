@@ -142,81 +142,76 @@ if __name__ == '__main__':
     shared_keys = np.zeros(1)
 
     for iter in range(args.epochs):
-
-        #Distribute the model to all clients server -> client
-        for idx in range(0, args.num_users):
-            print("In for loop :)")
-            clientsocket, address = server.accept() 
-            print("connection from " + address[0] + " accepted.")
-            Connection_handling(clientsocket, address)
-
-        #Wait for all client models to be received (all clients) -> server
-        modelFolder = MODELFOLDER
-        fileCount = 0
-        while (fileCount != args.num_users):
-            for file in os.scandir(modelFolder):
-                if file.is_file():
-                    fileCount += 1
-
         print("Epoch: ", iter)
+        
         loss_locals = []
         if not args.all_clients:
             w_locals = []
+        
         m = max(int(args.frac * args.num_users), 1)
-        #Comment out when using adaptive dp
+        # Comment out when using adaptive dp
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
-        #print("Idx List: " , idxs_users)
         
         accuracyList = []
-        #for idx in idxs_users:
-        for idx in range(1, args.num_users+1): # Loop trains all the models in the model folder
-            print(" User: " , idx)
+        
+        # Handle each client in one loop: distributing and receiving the model
+        for idx in range(1, args.num_users + 1):  # Loop trains all the models in the model folder
+            print("User:", idx)
             
-           # 'fed_{}_{}_{}_C{}_Non_iid{}_DP_3_clients.png'.format(args.dataset)
+            # Accept connection and handle the client
+            clientsocket, address = server.accept()
+            print("Connection from " + address[0] + " accepted.")
+            Connection_handling(clientsocket, address)
+
+            # Wait for the client model to be received (server -> client)
             File_in_use = True
             while File_in_use:
                 try:
-                    checkpoint = torch.load('Pi_models/main_server_fed_{}.pt'.format(idx), map_location=torch.device('cpu'))
+                    checkpoint = torch.load(f'Pi_models/main_server_fed_{idx}.pt', map_location=torch.device('cpu'))
                     File_in_use = False
                 except:
-                    print('Pi_models/main_server_fed_{}.pt being written currently'.format(idx))
+                    print(f'Pi_models/main_server_fed_{idx}.pt being written currently')
                     time.sleep(4)
                     File_in_use = True
+            
+            # Load the received model into the global model (net_glob)
             net_glob.load_state_dict(checkpoint)
-
-           # net_glob.load_state_dict(checkpoint['model_state_dict'])
+            
+            # Prepare the model for local training or updates
             localModel = net_glob.state_dict()
 
+            # Append to local weights (w_locals) based on client configuration
             if args.all_clients:
                 w_locals[idx] = copy.deepcopy(localModel)
             else:
                 w_locals.append(copy.deepcopy(localModel))
-            #loss_locals.append(copy.deepcopy(loss))
+            
+            # Optionally add loss calculation here if required for local models
+            # loss_locals.append(copy.deepcopy(loss))
 
-        # update global weights
+        # After all models have been processed, update global weights using FedAvg
         if args.global_aggr == 'FedAvg':
             w_glob = FedAvg(w_locals)
-            #print('this actually runs')
         else:
             print('something wrong')
-            
-        # copy weight to net_glob
+        
+        # Copy updated global weights to net_glob
         net_glob.load_state_dict(w_glob)
         
-        #save the model
+        # Save the model after aggregation
         torch.save(net_glob.state_dict(), "models/main_server_fed_overall.pt")
 
-        # print loss and accuracy of current model
+        # Evaluate the model after training
         net_glob.eval()
-        acc_train, l = test_img(net_glob,dataset_train, args)
+        acc_train, l = test_img(net_glob, dataset_train, args)
         training_accuracy_list.append(acc_train)
         training_loss_list.append(l)
         print('Accuracy: ', acc_train)
         print('Loss: ', l)
         print(training_accuracy_list)
-        #clearprint(training_loss_list)
-        
-        #Remove all previous models for new ones to come in
+
+        # Remove all previous models for new ones to come in
+        modelFolder = MODELFOLDER
         for file in os.scandir(modelFolder):
             os.remove(file)
             
