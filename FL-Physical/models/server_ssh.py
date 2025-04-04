@@ -4,8 +4,6 @@ import socket
 import time
 import threading
 
-
-
 def SendToClient(client,clientsocket, file = "",filepath = "",message = ""):
     #try:
     with SCPClient(client.get_transport()) as scp_Client:
@@ -17,7 +15,6 @@ def SendToClient(client,clientsocket, file = "",filepath = "",message = ""):
     print(msg_decoded)
     #except:
     #    print("SentToClient() Failed.")
-
 
 def Connection_handling(clientsocket, address):
     #time.sleep(5)
@@ -43,46 +40,10 @@ def Connection_handling(clientsocket, address):
     SSH_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     SSH_client.connect(address[0], username=username, password=password)
 
-
+    # Sending main_server_fed_overall.pt to the server and it is receiving main_server_fed.pt which is the equivalent model.
     SendToClient(client=SSH_client,clientsocket=clientsocket,file="models/main_server_fed_overall.pt", 
-                 filepath="/home/pi/Desktop/main_server_fed.pt",
+                 filepath="C:/Users/garrettssh2/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/main_server_fed.pt",
                  message="Server:Sent file to client")
     #time.sleep(3)
-
     
     SSH_client.close()
-
-'''  
-while !flag
-    try
-        Connectio:
-        flag = true
-    except:
-        flag = false
-'''
-
-
-
-'''
-Server/client port settings for windows
-Control Panel
-\->System and Security
-    \->Windows Defender Firewall
-        \->Advanced Settings
-            \->Inbound Rules
-                \->New Rule...
-                    |ruletype == Port
-                    |TCP and Specific local ports: 4045 (or any port you want to use over 1000ish and not reserved for any other communication)
-                    |Allow the Connection
-                    |Domain Private Public
-                    |Name = TCP Port 4045 opening
-            \->Outbound Rules
-                \->New Rule...
-                    |ruletype == Port
-                    |TCP and Specific local ports: 4045 (or any port you want to use over 1000ish and not reserved for any other communication)
-                    |Allow the Connection
-                    |Domain Private Public
-                    |Name = TCP Port 4045 opening
-
-
-'''

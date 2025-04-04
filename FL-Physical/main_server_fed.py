@@ -10,7 +10,6 @@ import os
 import numpy as np
 from torchvision import datasets, transforms
 import torch
-
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid
 from utils.options import args_parser
 from models.Update import LocalUpdate
@@ -18,7 +17,6 @@ from models.Update import LocalUpdate
 from models.Fed import FedAvg
 from models.test import test_img
 import torchvision
-
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -33,7 +31,6 @@ import time as t
 #from opacus.validators import ModuleValidator
 from torch.utils.data import Dataset, DataLoader
 from models.server_ssh import Connection_handling
-
 import paramiko
 from scp import SCPClient
 import socket
@@ -108,9 +105,7 @@ def adjustPB(PBList, accList):
         i -= 1
     print(newPB)
     return newPB
-        
-
-
+    
 if __name__ == '__main__':
     f = open("config_server.txt", "r")
     lineCount = 0
@@ -142,7 +137,7 @@ if __name__ == '__main__':
     f.close()
     # parse args
     args = args_parser()
-    args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
+    args.device = torch.device('cpu')
     ################## args def for testing
     args.num_users = NUM_CLIENTS
     args.epochs = NUM_gl_EPOCHS
@@ -156,12 +151,10 @@ if __name__ == '__main__':
     training_loss_list = []
 
     # load dataset and split users
-    dataset = torch.load('../../LS_HAR_data.pt')
+    dataset = torch.load('LS_HAR_data.pt', map_location=torch.device('cpu'))
     print(dataset.shape)
     #dataset = dataset.float()
     dataset = CustomDataset(dataset)
-    
-
     total_count = len(dataset)
     train_count = int(0.05*total_count) # 5%
     test_count = total_count - train_count
@@ -181,14 +174,12 @@ if __name__ == '__main__':
     else:
         exit('Error: unrecognized model')
 
-
     net_glob.load_state_dict(torch.load("models/main_server_fed_overall.pt", map_location=torch.device('cpu')))
 
     net_glob.train()
 
     # copy weights
     w_glob = net_glob.state_dict()
-
 
     # training
     loss_train = []
@@ -199,7 +190,6 @@ if __name__ == '__main__':
     val_acc_list, net_list = [], []
 
     clientAddresses = []
-   
 
     file1 = open("output_FL_Resnet_HAR.txt", "w") 
 
@@ -261,7 +251,6 @@ if __name__ == '__main__':
                     File_in_use = True
             net_glob.load_state_dict(checkpoint)
 
-
            # net_glob.load_state_dict(checkpoint['model_state_dict'])
             localModel = net_glob.state_dict()
 
@@ -280,13 +269,11 @@ if __name__ == '__main__':
         else:
             print('something wrong')
             
-            
         # copy weight to net_glob
         net_glob.load_state_dict(w_glob)
         
         #save the model
         torch.save(net_glob.state_dict(), "models/main_server_fed_overall.pt")
-
 
         # print loss and accuracy of current model
         net_glob.eval()
@@ -301,10 +288,7 @@ if __name__ == '__main__':
         #Remove all previous models for new ones to come in
         for file in os.scandir(modelFolder):
             os.remove(file)
-
             
-
-
     # Final Connection Handling to terminate clients
     for idx in range(0, args.num_users):  
         clientsocket, address = server.accept() 
