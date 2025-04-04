@@ -1,4 +1,5 @@
 import paramiko
+import os
 from scp import SCPClient
 import socket
 import time
@@ -98,7 +99,17 @@ def decrypt_model(shared_secret):
         f.write(plaintext)
 
     print("[CLIENT] Model decrypted successfully.")
-    
+
+def wait_for_file(filename, timeout=15):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if os.path.exists(filename) and os.access(filename, os.R_OK):
+            print("Access is true")
+            return True
+        print(f"Waiting for {filename} to become accessible")
+        time.sleep(12)
+    raise TimeoutError(f"File {filename} is not accessible after {timeout} seconds.")
+
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
         self.dataset = dataset
@@ -265,11 +276,9 @@ while True:
     shared_secret = traffic_handling(serversocket, int(CLIENT_ID))
     
     ## Model Training
-    time.sleep(15)
+    wait_for_file("main_server_fed.pt")
 
     decrypt_model(shared_secret)
-
-    time.sleep(1)
 
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
@@ -296,6 +305,7 @@ while True:
                 filepath="C:/Users/garrettssh/Downloads/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/main_server_fed_"+CLIENT_ID+".pt",
                 message="sent file")
 
+    os.remove("main_server_fed.pt")
 
 
 
