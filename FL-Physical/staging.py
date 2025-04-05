@@ -293,7 +293,7 @@ while True:
     ## Model Training
     #wait_for_file("main_server_fed.pt")
 
-    time.sleep(30)
+    time.sleep(20)
 
     decrypt_model(shared_secret)
 
