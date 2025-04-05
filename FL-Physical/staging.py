@@ -310,7 +310,7 @@ while True:
 
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
-    net_glob.load_state_dict(torch.load('main_server_fed.pt', map_location=torch.device('cpu')))
+    net_glob.load_state_dict(torch.load('main_server_fed.pt', map_location=torch.device('cpu'), weights_only=False))
     # Call training function
     print("\nTraining...")
     state_dict, avg_loss, lossPerEpoch = local_update.train(net_glob)
@@ -327,21 +327,15 @@ while True:
     password = SERVER_PASS  # password of central server
     file_path = SERVER_FILE_LOC
         
+    private_key_path = r"C:\\Users\\garrettssh2\\.ssh\\id_rsa"
+    private_key = paramiko.RSAKey.from_private_key_file(private_key_path)
 
     server_SSH = paramiko.client.SSHClient()
     server_SSH.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    server_SSH.connect(SERVER, username=username, password=password)
+    server_SSH.connect(SERVER, username=username, pkey=private_key)
     SendToServer(server=server_SSH,file="main_server_fed_"+CLIENT_ID+".pt",
                 filepath="C:/Users/garrettssh/Downloads/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/main_server_fed_"+CLIENT_ID+".pt",
                 message="sent file")
 
     os.remove("main_server_fed.pt")
-
-
-
-
-
-
-
-
 
