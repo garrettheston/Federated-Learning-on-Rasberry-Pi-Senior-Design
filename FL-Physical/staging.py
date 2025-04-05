@@ -115,15 +115,26 @@ def encrypt_model(shared_secret,input_file):
 
     print("[SERVER] Model encrypted successfully.")
 
-def wait_for_file(filename, timeout=15):
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        if os.path.exists(filename) and os.access(filename, os.R_OK):
-            print("Access is true")
-            return True
-        print(f"Waiting for {filename} to become accessible")
-        time.sleep(15)
-    raise TimeoutError(f"File {filename} is not accessible after {timeout} seconds.")
+def wait_until_file_is_complete(file_path, stable_time=2.0, check_interval=0.5):
+    last_size = -1
+    same_size_count = 0
+
+    while True:
+        if os.path.exists(file_path) and os.access(file_path, os.R_OK):
+            current_size = os.path.getsize(file_path)
+            if current_size == last_size:
+                same_size_count += check_interval
+                if same_size_count >= stable_time:
+                    print(f"File {file_path} is now stable and readable.")
+                    break
+            else:
+                same_size_count = 0
+                last_size = current_size
+        else:
+            same_size_count = 0  # Reset if file disappears or unreadable
+
+        print(f"Waiting for file {file_path} to stabilize...")
+        time.sleep(check_interval)
 
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
@@ -291,9 +302,9 @@ while True:
     shared_secret = traffic_handling(serversocket, int(CLIENT_ID))
     
     ## Model Training
-    #wait_for_file("main_server_fed.pt")
+    wait_until_file_is_complete("main_server_fed.pt")
 
-    time.sleep(20)
+    #time.sleep(20)
 
     decrypt_model(shared_secret)
 
