@@ -28,11 +28,30 @@ import time as t
 #from opacus.validators import ModuleValidator
 from torch.utils.data import Dataset, DataLoader
 from Connection_Handle import connection_handling
-from Crypto_Utils import kyber_key_exchange_server, encrypt_model, decrypt_model, wait_for_complete_file
+from Crypto_Utils import kyber_key_exchange_server, encrypt_model, decrypt_model, wait_until_file_is_complete
 from scp import SCPClient
 import socket
 import time
 import threading
+
+# Goal for multithreading today: Slowly lock up fewer and fewer features to figure out what is broken
+# Possible approach: create an array (yeah we're doing that again) in hopes of indexing it
+
+# Encryption from server->client is successful
+# Encryption from client->server is not successful <-- this is important and I cannot get this to work
+# I have a clean up mechanism on clients and servers if you finish the program (BIG IF)
+
+# What works now:
+# Server -> clients encryption/decryption successful
+# Clients -> server encryption/decryption successful
+# Cryptosystem is completely successful
+
+# What's left -> make a graphical user interface (but I've already done this (before I recreated the entire program))
+    # So I think I can just take parts of the GUI and just implement the event handling and GUI in here
+    # None of this is really technical to any capacity because it doesn't really involve crypto math or anything (just events)
+    # So nothing to do with machine learning, cryptography, etc
+
+lock = threading.Lock()  # Global semaphore
 
 class CustomDataset(Dataset):
     def __init__(self, data_tensor):
@@ -47,23 +66,28 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx], self.targets[idx]
 
-def handle_client(idx, server, net_glob):
+def handle_client(idx, clientsocket, address, net_glob, w_locals):
+    
     try:
-
-        clientsocket, address = server.accept()  # Accepting the connection to handle the client
+        #with lock: 
         print("Connection from " + address[0] + " accepted.")
         shared_key, client_id = kyber_key_exchange_server(clientsocket)
-        
-        encrypt_model(shared_key, "models/main_server_fed_overall.pt", "models/main_server_fed_protected.pt")  # Encrypt model and send it
-        connection_handling(clientsocket, address, client_id)
-        wait_for_complete_file(f"Pi_models/main_server_fed_{idx}.pt")
-        decrypt_model(shared_key, f"Pi_models/main_server_fed_{idx}.pt")
-        
-        checkpoint = torch.load(f'Pi_models/main_server_fed_{idx}.pt', map_location=torch.device('cpu'))
+        file_path = f"Pi_models/main_server_fed_{client_id}.pt"
+                
+        with lock:
+            encrypt_model(shared_key, "models/main_server_fed_overall.pt", "models/main_server_fed_protected.pt")  # Encrypt model and send it
+            connection_handling(clientsocket, address, client_id)
+        wait_until_file_is_complete(file_path)
+        while not (os.path.exists(file_path) and os.access(file_path, os.R_OK)):
+            print(f"Waiting for file {file_path} to become available...")
+            time.sleep(0.5)
+            
+        print(f"{file_path} is now available and readable!")
+        decrypt_model(shared_key, file_path)
 
+        checkpoint = torch.load(file_path, map_location=torch.device('cpu'))
         # Load the received model into the global model (net_glob)
         net_glob.load_state_dict(checkpoint)
-        
         # Prepare the model for local training or updates
         localModel = net_glob.state_dict()
 
@@ -101,7 +125,7 @@ if __name__ == '__main__':
     training_loss_list = []
 
     # load dataset and split users
-    dataset = torch.load('LS_HAR_data.pt', map_location=torch.device('cpu'))
+    dataset = torch.load('LS_HAR_data.pt', map_location=torch.device('cpu'), weights_only=False)
     print(dataset.shape)
     #dataset = dataset.float()
     dataset = CustomDataset(dataset)
@@ -124,7 +148,7 @@ if __name__ == '__main__':
     else:
         exit('Error: unrecognized model')
 
-    net_glob.load_state_dict(torch.load("models/main_server_fed_overall.pt", map_location=torch.device('cpu')))
+    net_glob.load_state_dict(torch.load("models/main_server_fed_overall.pt", map_location=torch.device('cpu'), weights_only=False))
 
     net_glob.train()
 
@@ -145,6 +169,7 @@ if __name__ == '__main__':
 
     if args.all_clients: 
         print("Aggregation over all clients")
+        #w_locals = [copy.deepcopy(w_glob) for _ in range(args.num_users)] # Potential fix to problem (might need deepcopy)
         w_locals = [w_glob for i in range(args.num_users)]
     
     #host = "10.4.159.106"   # this the address of server computer (not client!!)
@@ -174,14 +199,21 @@ if __name__ == '__main__':
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
         
         accuracyList = []
-        
-        # Handle each client in one loop: distributing and receiving the model
-        for idx in range(1, args.num_users + 1):  # Loop trains all the models in the model folder
+        connected_clients = 0  # Counter for number of clients connected
+
+        # Main loop to accept connections from clients
+        while connected_clients < NUM_CLIENTS:
             
-            print("User:", idx)
-            thread = threading.Thread(target=handle_client, args=(idx, server, net_glob))
+            print(f"Waiting for {NUM_CLIENTS} clients to connect...")
+            clientsocket, address = server.accept()
+
+            # Accept and handle the connection in a separate thread
+            thread = threading.Thread(target=handle_client, args=(connected_clients, clientsocket, address, net_glob, w_locals))
             threads.append(thread)
             thread.start()
+            
+            # Increment the number of connected clients
+            connected_clients += 1
 
         # Wait for all threads to finish
         for thread in threads:

@@ -58,20 +58,28 @@ def decrypt_model(secret,provided):
 
     print(f"[SERVER] Model decryption successful. Finished writing to {provided} following decryption")
 
-
 # STANDARD UTIL
-def wait_for_complete_file(file_path, timeout=30, check_interval=2):
-    prev_size = -1
-    elapsed_time = 0
-    while elapsed_time < timeout:
-        print("Waiting")
-        try:
-            current_size = os.path.getsize(file_path)
-            if current_size == prev_size:  # File size is stable
-                return True
-            prev_size = current_size
-        except FileNotFoundError:
-            pass  # File might not have been fully written yet
-        time.sleep(check_interval)
-        elapsed_time += check_interval
-    return False  # Timeout reached
+def wait_until_file_is_complete(file_path, stable_time=2.0, check_interval=0.5):
+    last_size = -1
+    same_size_count = 0
+
+    try:
+        while True:
+            if os.path.exists(file_path) and os.access(file_path, os.R_OK):
+                current_size = os.path.getsize(file_path)
+                if current_size == last_size:
+                    same_size_count += check_interval
+                    if same_size_count >= stable_time:
+                        print(f"File {file_path} is now stable and readable.")
+                        break
+                else:
+                    same_size_count = 0
+                    last_size = current_size
+            else:
+                same_size_count = 0  # Reset if file disappears or unreadable
+
+            print(f"Waiting for file {file_path} to stabilize...")
+            time.sleep(check_interval)
+
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Exiting wait loop.")
