@@ -34,23 +34,6 @@ import socket
 import time
 import threading
 
-# Goal for multithreading today: Slowly lock up fewer and fewer features to figure out what is broken
-# Possible approach: create an array (yeah we're doing that again) in hopes of indexing it
-
-# Encryption from server->client is successful
-# Encryption from client->server is not successful <-- this is important and I cannot get this to work
-# I have a clean up mechanism on clients and servers if you finish the program (BIG IF)
-
-# What works now:
-# Server -> clients encryption/decryption successful
-# Clients -> server encryption/decryption successful
-# Cryptosystem is completely successful
-
-# What's left -> make a graphical user interface (but I've already done this (before I recreated the entire program))
-    # So I think I can just take parts of the GUI and just implement the event handling and GUI in here
-    # None of this is really technical to any capacity because it doesn't really involve crypto math or anything (just events)
-    # So nothing to do with machine learning, cryptography, etc
-
 lock = threading.Lock()  # Global semaphore
 
 class CustomDataset(Dataset):
