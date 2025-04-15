@@ -13,10 +13,19 @@ import torch.nn.functional as F
 from torch import nn
 from kyber_py.ml_kem import ML_KEM_512
 from Crypto.Cipher import AES
+#from Crypto.Cipher import unpad
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import HKDF
 from Crypto.Hash import SHA256
+#import tpm2_pytss
 import random
+import io
+
+# Implement TPM to store keys that protect the dataset
+
+# Implement ephemeral storage that only allows the model to exist in memory
+
+# Keys are kept in live memory when running the script, and by default the OS uses ASLR
 
 def test(net_g, data_loader, args):
     # testing
@@ -53,8 +62,10 @@ def traffic_handling(server_socket, client_id):
        
         try:
             # Encapsulate shared secret
+            start_time = time.time()
             shared_secret, ciphertext = ML_KEM_512.encaps(public_key)
-            print("[CLIENT] Here is the ciphertext: ", ciphertext)
+            end_time = time.time()
+            print(f"Time to generate shared_secret: {(end_time-start_time) * 1000}")
             print("[CLIENT] Here is the shared secret key derived from the server", shared_secret.hex())
 
             data = client_id.to_bytes(1,byteorder='big') + ciphertext
@@ -95,10 +106,9 @@ def decrypt_model(shared_secret):
     print(f"[CLIENT] received IV: {iv}")
     cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
     plaintext = cipher.decrypt(ciphertext)
-    with open("main_server_fed.pt", "wb") as f:
-        f.write(plaintext)
 
-    print("[CLIENT] Model decrypted successfully.")
+    print("[CLIENT] Model decrypted successfully. Finished writing to ephemeral storage")
+    return io.BytesIO(plaintext)
 
 def encrypt_model(shared_secret,input_file):
     
@@ -207,6 +217,20 @@ Searching_connection = True
 PORT = 4045
 #SERVER = "10.4.159.106"
 #SERVER = "10.4.148.119"
+'''
+with open('LS_HAR_data_encrypted.pt', 'rb') as f:
+    iv = f.read(16)
+    encrypted_data = f.read()
+
+aes_key = tpm.unseal('mydatasetkey')
+
+cipher = AES.new(aes_key, AES.MODE_CBC, iv=iv)
+dataset_decrypted = unpad(cipher.decrypt(encrypted_data, AES.block_size))
+
+dataset_np = np.frombuffer(dataset_decrypted, dtype=np.float32)
+dataset = torch.from_numpy(dataset_np).float()
+
+dataset = CustomDataset(dataset) '''
 
 #Create dataset
 dataset = torch.load('LS_HAR_data.pt').float()
@@ -214,8 +238,8 @@ dataset = CustomDataset(dataset)
 
 #Split data
 total_count = len(dataset)
-train_count = int(0.01*total_count) # 5%
-test_count = total_count - train_count # 
+train_count = int(0.05*total_count) # 80% of dataset to increase the portion
+test_count = total_count - train_count # remaining dataset is used for testing
 random.seed(42)
 torch.manual_seed(42)
 dataset_train, dataset_test = random_split(dataset, [train_count, test_count])
@@ -304,21 +328,31 @@ while True:
     ## Model Training
     wait_until_file_is_complete("main_server_fed.pt")
 
-    #time.sleep(20)
-
-    decrypt_model(shared_secret)
+    start_time = time.time()
+    ephemeral_model = decrypt_model(shared_secret)
+    end_time = time.time()
+    print(f"Decryption time result: {(end_time-start_time) * 1000}")
 
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
-    net_glob.load_state_dict(torch.load('main_server_fed.pt', map_location=torch.device('cpu'), weights_only=False))
+    net_glob.load_state_dict(torch.load(ephemeral_model, map_location=torch.device('cpu'), weights_only=False))
+    
+    ephemeral_model = None
+
     # Call training function
     print("\nTraining...")
+    start_time = time.time()
     state_dict, avg_loss, lossPerEpoch = local_update.train(net_glob)
+    end_time = time.time()
+    print(f"Training time result: {(end_time-start_time) * 1000}")
     print("Training Finished")
     # Save the model dictionary/parameters
     torch.save(state_dict, 'main_server_fed_'+CLIENT_ID+'.pt')
 
+    start_time = time.time()
     encrypt_model(shared_secret, "main_server_fed_"+CLIENT_ID+".pt")
+    end_time = time.time()
+    print(f"Encrypt time result: {(end_time-start_time) * 1000}")
 
     ## Send Model
     # Here is only sending the model back
@@ -333,9 +367,12 @@ while True:
     server_SSH = paramiko.client.SSHClient()
     server_SSH.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     server_SSH.connect(SERVER, username=username, pkey=private_key)
+    start_time = time.time()
     SendToServer(server=server_SSH,file="main_server_fed_"+CLIENT_ID+".pt",
                 filepath="C:/Users/garrettssh/Downloads/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/main_server_fed_"+CLIENT_ID+".pt",
                 message="sent file")
-
+    end_time = time.time()
+    print(f"Transmission of model client->server: {(end_time-start_time) * 1000}")
+    
     os.remove("main_server_fed.pt")
 
