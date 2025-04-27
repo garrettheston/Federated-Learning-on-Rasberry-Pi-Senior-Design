@@ -18,11 +18,21 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid
 from utils.options import args_parser
 from models.Update import LocalUpdate
-from models.Fed import FedAvg
+from models.Fed import FedAvg, calculate_l2_norm
 from models.test import test_img
 from Connection_Handle import connection_handling
 from Crypto_Utils import kyber_key_exchange_server, encrypt_model, decrypt_model, wait_until_file_is_complete
 from scp import SCPClient
+
+# Server -> client send a machine learning model
+    # This is perfect because I encrypt the model and then it's decrypted when the client receives
+    # There is a chance that someone has gained control of one of the many different clients connected to the server.
+        # Therefore, after the client receives and decrypts the transmission, there is a decrypted file that exists on the client
+
+        # Introduced ephemeral storage of the model
+            # The decryption of the (at the time) encrypted model decrypts into a io buffer which exists only in memory
+            # So instead of existing in a .pt format, it exists in ASLR which protects it entirely
+            # Python garbage collection deallocates it after it goes out of scope
 
 class FederatedLearningGUI:
     def __init__(self, root):
@@ -69,11 +79,11 @@ class FederatedLearningGUI:
         ttk.Entry(settings_frame, textvariable=self.port, width=6).grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
         
         ttk.Label(settings_frame, text="Num Clients:").grid(row=0, column=4, padx=5, pady=5, sticky=tk.W)
-        self.num_clients = tk.IntVar(value=2)
+        self.num_clients = tk.IntVar(value=1)
         ttk.Entry(settings_frame, textvariable=self.num_clients, width=3).grid(row=0, column=5, padx=5, pady=5, sticky=tk.W)
         
         ttk.Label(settings_frame, text="Global Epochs:").grid(row=0, column=6, padx=5, pady=5, sticky=tk.W)
-        self.num_epochs = tk.IntVar(value=2)
+        self.num_epochs = tk.IntVar(value=10)
         ttk.Entry(settings_frame, textvariable=self.num_epochs, width=3).grid(row=0, column=7, padx=5, pady=5, sticky=tk.W)
         
         ttk.Label(settings_frame, text="Model Folder:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
@@ -212,7 +222,7 @@ class FederatedLearningGUI:
     def add_client(self, address):
         """Add a client to the connected clients list"""
         timestamp = time.strftime('%H:%M:%S')
-        client_info = f"[{timestamp}] Client connected: {address[0]}:{address[1]}\n"
+        client_info = f"[{timestamp}] Client connected: {address[0]}\n"
         
         self.client_list.configure(state=tk.NORMAL)
         self.client_list.insert(tk.END, client_info)
@@ -263,6 +273,7 @@ class FederatedLearningGUI:
             # Create custom dataset
             dataset = CustomDataset(dataset)
             total_count = len(dataset)
+            print(f"Total count of the dataset: {total_count}")
             train_count = int(0.05*total_count)  # 5%
             test_count = total_count - train_count
             
@@ -313,7 +324,6 @@ class FederatedLearningGUI:
             self.add_client(address)
             self.log(f"Connection from {address[0]} accepted.")
             
-            print(f"Shared secret transmission start: {time.time()}")
             shared_key, client_id = kyber_key_exchange_server(clientsocket)
             file_path = f"Pi_models/main_server_fed_{client_id}.pt"
                     
@@ -322,16 +332,18 @@ class FederatedLearningGUI:
                 connection_handling(clientsocket, address, client_id)
                 
             wait_until_file_is_complete(file_path)
-            while not (os.path.exists(file_path) and os.access(file_path, os.R_OK)):
-                self.log(f"Waiting for file {file_path} to become available...")
-                time.sleep(0.5)
                 
             self.log(f"{file_path} is now available and readable!")
-            decrypt_model(shared_key, file_path)
+            ephemeral_model = decrypt_model(shared_key, file_path)
+            self.log(f"Model decrypted successfully!")
 
-            checkpoint = torch.load(file_path, map_location=torch.device('cpu'))
+            checkpoint = torch.load(ephemeral_model, map_location=torch.device('cpu'))
+            
+            ephemeral_model = None # Free up the memory space to to prevent scraping and save memory space
+
             # Load the received model into the global model (net_glob)
             net_glob.load_state_dict(checkpoint)
+            self.log(f"Model loaded into global model")
             # Prepare the model for local training or updates
             localModel = net_glob.state_dict()
 
@@ -435,7 +447,26 @@ class FederatedLearningGUI:
                 # Wait for all client threads to finish
                 for thread in self.threads:
                     thread.join()
+                            
+                # Calculate L2 norms for the updates
+                l2_norms = calculate_l2_norm(self.w_locals)
                 
+                # Compute the mean and std of L2 norms
+                mean_l2_norm = np.mean(l2_norms)
+                std_l2_norm = np.std(l2_norms)
+                
+                # Set the threshold (2 standard deviations)
+                threshold = mean_l2_norm + 2 * std_l2_norm
+                
+                print(f"Threshold for anomaly detection: {threshold}")
+                
+                # Check for anomalous updates (those that exceed the threshold)
+                for idx, l2_norm in enumerate(l2_norms):
+                    if l2_norm > threshold:
+                        print(f"Anomalous model update detected from client {idx+1} with L2 norm: {l2_norm}")
+                    else:
+                        print(f"Model update from client {idx+1} is normal with L2 norm: {l2_norm}")
+
                 # Federated weight aggregation
                 if self.is_running:
                     if self.args.global_aggr == 'FedAvg':

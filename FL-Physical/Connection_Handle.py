@@ -1,4 +1,5 @@
 import paramiko
+import time
 from scp import SCPClient
 
 # chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
@@ -25,12 +26,15 @@ def connection_handling(clientsocket, address, client_id):
         SSH_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         SSH_client.connect(address[0], username=username, password=password)
     
+        start_time = time.time()
         # Sending main_server_fed_overall.pt to the server and it is receiving main_server_fed.pt which is the equivalent model.
         SendToModelClient(client=SSH_client,clientsocket=clientsocket,file="models/main_server_fed_protected.pt", 
                     #filepath="/home/garrettssh/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/main_server_fed.pt", # rasp pi location
                     filepath="C:/Users/garrettssh2/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/main_server_fed.pt", # Windows loc
                     message="Server:Sent file to client")
-        #time.sleep(3)
+        end_time = time.time()
+        print(f"Server -> client transmission of model: {(end_time-start_time)*1000}")
+
     else:
         username = 'garrettssh' # Username for rasp pis
         password = 'password2'   # pasword of raspberry pi 4
