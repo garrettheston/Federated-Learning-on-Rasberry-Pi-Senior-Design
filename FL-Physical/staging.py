@@ -21,11 +21,7 @@ from Crypto.Hash import SHA256
 import random
 import io
 
-# Implement TPM to store keys that protect the dataset
-
-# Implement ephemeral storage that only allows the model to exist in memory
-
-# Keys are kept in live memory when running the script, and by default the OS uses ASLR
+# The only thing that needs to be standardized for clients is the file path to the server and the connection needs to be started from the server
 
 def test(net_g, data_loader, args):
     # testing
@@ -361,7 +357,7 @@ while True:
     password = SERVER_PASS  # password of central server
     file_path = SERVER_FILE_LOC
         
-    private_key_path = r"C:\\Users\\garrettssh2\\.ssh\\id_rsa"
+    private_key_path = r"C:\\Users\\garrettssh\\.ssh\\id_rsa"
     private_key = paramiko.RSAKey.from_private_key_file(private_key_path)
 
     server_SSH = paramiko.client.SSHClient()
@@ -369,7 +365,7 @@ while True:
     server_SSH.connect(SERVER, username=username, pkey=private_key)
     start_time = time.time()
     SendToServer(server=server_SSH,file="main_server_fed_"+CLIENT_ID+".pt",
-                filepath="C:/Users/garrettssh/Downloads/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/main_server_fed_"+CLIENT_ID+".pt",
+                filepath="C:/Users/garrettssh2/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/main_server_fed_"+CLIENT_ID+".pt",
                 message="sent file")
     end_time = time.time()
     print(f"Transmission of model client->server: {(end_time-start_time) * 1000}")
