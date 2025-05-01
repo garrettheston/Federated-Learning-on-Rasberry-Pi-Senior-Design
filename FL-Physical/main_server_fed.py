@@ -71,7 +71,7 @@ class FederatedLearningGUI:
         
         # Server IP and Port
         ttk.Label(settings_frame, text="Server IP:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        self.server_ip = tk.StringVar(value="10.0.0.51")
+        self.server_ip = tk.StringVar(value="10.0.0.10")
         ttk.Entry(settings_frame, textvariable=self.server_ip, width=15).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
         
         ttk.Label(settings_frame, text="Port:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
@@ -87,7 +87,7 @@ class FederatedLearningGUI:
         ttk.Entry(settings_frame, textvariable=self.num_epochs, width=3).grid(row=0, column=7, padx=5, pady=5, sticky=tk.W)
         
         ttk.Label(settings_frame, text="Model Folder:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-        self.model_folder = tk.StringVar(value=r"C:\\Users\\garrettssh\\Downloads\\Federated-Learning-on-Rasberry-Pi-Senior-Design\\FL-Physical\\Pi_models")
+        self.model_folder = tk.StringVar(value=r"C:\\Users\\garrettssh2\\Federated-Learning-on-Rasberry-Pi-Senior-Design\\FL-Physical\\Pi_models")
         ttk.Entry(settings_frame, textvariable=self.model_folder, width=70).grid(row=1, column=1, columnspan=7, padx=5, pady=5, sticky=tk.W+tk.E)
         
         # Control buttons
@@ -334,7 +334,12 @@ class FederatedLearningGUI:
             wait_until_file_is_complete(file_path)
                 
             self.log(f"{file_path} is now available and readable!")
-            ephemeral_model = decrypt_model(shared_key, file_path)
+            try:
+                ephemeral_model = decrypt_model(shared_key, file_path)
+                self.log("Integrity check passed")
+            except ValueError as e:
+                self.log("Integrity check failed.")
+
             self.log(f"Model decrypted successfully!")
 
             checkpoint = torch.load(ephemeral_model, map_location=torch.device('cpu'))
@@ -451,21 +456,21 @@ class FederatedLearningGUI:
                 # Calculate L2 norms for the updates
                 l2_norms = calculate_l2_norm(self.w_locals)
                 
-                # Compute the mean and std of L2 norms
-                mean_l2_norm = np.mean(l2_norms)
+                # Compute the median and std of L2 norms
+                median_l2_norm = np.median(l2_norms)
                 std_l2_norm = np.std(l2_norms)
                 
                 # Set the threshold (2 standard deviations)
-                threshold = mean_l2_norm + 2 * std_l2_norm
+                threshold = median_l2_norm + 2 * std_l2_norm
                 
-                print(f"Threshold for anomaly detection: {threshold}")
+                self.log(f"Threshold for anomaly detection: {threshold}")
                 
                 # Check for anomalous updates (those that exceed the threshold)
                 for idx, l2_norm in enumerate(l2_norms):
                     if l2_norm > threshold:
-                        print(f"Anomalous model update detected from client {idx+1} with L2 norm: {l2_norm}")
+                        self.log(f"Anomalous model update detected from client {idx+1} with L2 norm: {l2_norm}")
                     else:
-                        print(f"Model update from client {idx+1} is normal with L2 norm: {l2_norm}")
+                        self.log(f"Model update from client {idx+1} is normal with L2 norm: {l2_norm}")
 
                 # Federated weight aggregation
                 if self.is_running:

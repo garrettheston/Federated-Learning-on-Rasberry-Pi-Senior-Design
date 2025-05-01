@@ -8,13 +8,12 @@ import time
 import os
 import io
 
-# After I receive the machine learning model, it exists in a file with the extension .pt after it
-    # Representing the machine learning model as a file.
-# If someone where to penetrate my machine, they could steal, exfihltrate, or manipulate the model.
-# Therefore, I implemented something known as ephemeral storage
-    # Basically, the model after it's decrypted it's written exclusively to memory (RAM)
-    # And python uses ASLR which randomizes memory locations
-    # So basically, the model doesn't exist plainly to been because it's now in a memory buffer that you can't access
+def hash_file(file_path):
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(4096):
+            sha256.update(chunk)
+    return sha256
 
 def kyber_key_exchange_server(clientsocket):
 
@@ -38,6 +37,8 @@ def kyber_key_exchange_server(clientsocket):
 
 def encrypt_model(shared_key, input_file, output_file):
 
+    sha256 = hash_file("models/main_server_fed_overall.pt") # 32 byte long hash
+
     aes_key = HKDF(master=shared_key, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
     print("[SERVER] Encryption begins for model")
     iv = get_random_bytes(16)  # Generate IV (Nonce)
@@ -46,7 +47,7 @@ def encrypt_model(shared_key, input_file, output_file):
     cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
     ciphertext = cipher.encrypt(plaintext)
     print(f"[SERVER] iv: {iv}")
-    data_to_send = iv + ciphertext
+    data_to_send = sha256.digest() + iv + ciphertext
     # Save IV + Tag + Ciphertext in one file
     with open(output_file, "wb") as f:
         f.write(data_to_send)
@@ -59,12 +60,19 @@ def decrypt_model(secret,provided):
 
     with open(provided, 'rb') as f:
         data = f.read()
-    iv, ciphertext = data[:16], data[16:]
+    sha256_received, iv, ciphertext = data[:32], data[32:48], data[48:]
     print(f"[SERVER] received IV for decryption: {iv}")
     cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
     plaintext = cipher.decrypt(ciphertext)
     print(f"[SERVER] Model decryption successful. Finished writing this to an ephemeral buffer for security measures.")
     
+    sha256_computed = hashlib.sha256(plaintext).digest()
+
+    if sha256_computed != sha256_received:
+        raise ValueError()
+    else:
+        print("[CLIENT] Integrity check passed.")
+
     return io.BytesIO(plaintext)
     
 
