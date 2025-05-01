@@ -24,16 +24,6 @@ from Connection_Handle import connection_handling
 from Crypto_Utils import kyber_key_exchange_server, encrypt_model, decrypt_model, wait_until_file_is_complete
 from scp import SCPClient
 
-# Server -> client send a machine learning model
-    # This is perfect because I encrypt the model and then it's decrypted when the client receives
-    # There is a chance that someone has gained control of one of the many different clients connected to the server.
-        # Therefore, after the client receives and decrypts the transmission, there is a decrypted file that exists on the client
-
-        # Introduced ephemeral storage of the model
-            # The decryption of the (at the time) encrypted model decrypts into a io buffer which exists only in memory
-            # So instead of existing in a .pt format, it exists in ASLR which protects it entirely
-            # Python garbage collection deallocates it after it goes out of scope
-
 class FederatedLearningGUI:
     def __init__(self, root):
         self.root = root
@@ -325,10 +315,12 @@ class FederatedLearningGUI:
             self.log(f"Connection from {address[0]} accepted.")
             
             shared_key, client_id = kyber_key_exchange_server(clientsocket)
+            self.log("Kyber PQC KEM conducted.")
             file_path = f"Pi_models/main_server_fed_{client_id}.pt"
                     
             with self.lock:
                 encrypt_model(shared_key, "models/main_server_fed_overall.pt", "models/main_server_fed_protected.pt")
+                self.log("Model encrypted using PQC scheme.")
                 connection_handling(clientsocket, address, client_id)
                 
             wait_until_file_is_complete(file_path)
@@ -336,7 +328,7 @@ class FederatedLearningGUI:
             self.log(f"{file_path} is now available and readable!")
             try:
                 ephemeral_model = decrypt_model(shared_key, file_path)
-                self.log("Integrity check passed")
+                self.log("Integrity check passed.")
             except ValueError as e:
                 self.log("Integrity check failed.")
 

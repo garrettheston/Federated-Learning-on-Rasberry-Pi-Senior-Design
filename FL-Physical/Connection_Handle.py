@@ -2,7 +2,7 @@ import paramiko
 import time
 from scp import SCPClient
 
-# chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+# chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys -- for appropriate permissions
 
 def SendToModelClient(client,clientsocket, file = "",filepath = "",message = ""):
 
