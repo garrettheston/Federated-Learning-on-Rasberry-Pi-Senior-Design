@@ -20,8 +20,19 @@ from Crypto.Hash import SHA256
 #import tpm2_pytss
 import random
 import io
+import hashlib
 
-# The only thing that needs to be standardized for clients is the file path to the server and the connection needs to be started from the server
+def replace_with_random_weights(model):
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            param.data = 50 + torch.randn_like(param.data)  # Replace with random values
+
+def hash_file(file_path):
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(4096):
+            sha256.update(chunk)
+    return sha256
 
 def test(net_g, data_loader, args):
     # testing
@@ -98,16 +109,27 @@ def decrypt_model(shared_secret):
     print(f"[CLIENT] Model is beginning decryption")
     with open("main_server_fed.pt", "rb") as f:
         data = f.read()
-    iv, ciphertext = data[:16], data[16:]  # Extract components and hash
+    sha256_received, iv, ciphertext = data[:32], data[32:48], data[48:]  # Extract components and hash
     print(f"[CLIENT] received IV: {iv}")
     cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
     plaintext = cipher.decrypt(ciphertext)
+
+    # Compute SHA-256 of decrypted plaintext
+    sha256_computed = hashlib.sha256(plaintext).digest()
+
+    # Compare hashes
+    if sha256_computed != sha256_received:
+        raise ValueError("[CLIENT] Integrity check failed: hash mismatch")
+    else:
+        print("[CLIENT] Integrity check passed.")
 
     print("[CLIENT] Model decrypted successfully. Finished writing to ephemeral storage")
     return io.BytesIO(plaintext)
 
 def encrypt_model(shared_secret,input_file):
     
+    sha256 = hash_file("main_server_fed_"+CLIENT_ID+".pt") # 32 byte long hash
+
     aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
     iv = get_random_bytes(16)
     with open(input_file, "rb") as f:
@@ -115,7 +137,7 @@ def encrypt_model(shared_secret,input_file):
     cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
     ciphertext = cipher.encrypt(plaintext)
     print(f"[SERVER] iv: {iv}")
-    data_to_send = iv + ciphertext
+    data_to_send = sha256.digest() + iv + ciphertext
     with open(input_file, "wb") as f:
         f.write(data_to_send)
 
@@ -213,20 +235,6 @@ Searching_connection = True
 PORT = 4045
 #SERVER = "10.4.159.106"
 #SERVER = "10.4.148.119"
-'''
-with open('LS_HAR_data_encrypted.pt', 'rb') as f:
-    iv = f.read(16)
-    encrypted_data = f.read()
-
-aes_key = tpm.unseal('mydatasetkey')
-
-cipher = AES.new(aes_key, AES.MODE_CBC, iv=iv)
-dataset_decrypted = unpad(cipher.decrypt(encrypted_data, AES.block_size))
-
-dataset_np = np.frombuffer(dataset_decrypted, dtype=np.float32)
-dataset = torch.from_numpy(dataset_np).float()
-
-dataset = CustomDataset(dataset) '''
 
 #Create dataset
 dataset = torch.load('LS_HAR_data.pt').float()
@@ -234,7 +242,7 @@ dataset = CustomDataset(dataset)
 
 #Split data
 total_count = len(dataset)
-train_count = int(0.05*total_count) # 80% of dataset to increase the portion
+train_count = int(0.00917*total_count) # .9% of dataset to train on exactly 300 images
 test_count = total_count - train_count # remaining dataset is used for testing
 random.seed(42)
 torch.manual_seed(42)
@@ -342,8 +350,14 @@ while True:
     end_time = time.time()
     print(f"Training time result: {(end_time-start_time) * 1000}")
     print("Training Finished")
+
     # Save the model dictionary/parameters
     torch.save(state_dict, 'main_server_fed_'+CLIENT_ID+'.pt')
+
+    # in this case I would like to convert to random noise
+    #replace_with_random_weights(net_glob)
+
+    #torch.save(net_glob.state_dict(), 'main_server_fed_'+CLIENT_ID+'.pt')
 
     start_time = time.time()
     encrypt_model(shared_secret, "main_server_fed_"+CLIENT_ID+".pt")
@@ -372,3 +386,17 @@ while True:
     
     os.remove("main_server_fed.pt")
 
+'''
+with open('LS_HAR_data_encrypted.pt', 'rb') as f:
+    iv = f.read(16)
+    encrypted_data = f.read()
+
+aes_key = tpm.unseal('mydatasetkey')
+
+cipher = AES.new(aes_key, AES.MODE_CBC, iv=iv)
+dataset_decrypted = unpad(cipher.decrypt(encrypted_data, AES.block_size))
+
+dataset_np = np.frombuffer(dataset_decrypted, dtype=np.float32)
+dataset = torch.from_numpy(dataset_np).float()
+
+dataset = CustomDataset(dataset) '''
