@@ -1,49 +1,595 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# Python version: 3.6
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import threading
+import socket
+import time
+import os
 import random
+import copy
+import numpy as np
+import torch
+import torchvision
+from torch.utils.data import Dataset, DataLoader, random_split
 import matplotlib
+import time
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import copy
-import os
-import numpy as np
-from torchvision import datasets, transforms
-import torch
-
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid
 from utils.options import args_parser
 from models.Update import LocalUpdate
-#from models.Nets import MLP, CNNMnist, CNNCifar, ResNetTest
-from models.Fed import FedAvg
+from models.Fed import FedAvg, calculate_l2_norm
 from models.test import test_img
-import torchvision
-
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import torch
-from torchvision import transforms, datasets
-from torch import nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
-import torch.optim as optim
-import torchvision
-import time as t
-#from opacus.validators import ModuleValidator
-from torch.utils.data import Dataset, DataLoader
-from models.server_ssh import Connection_handling
-
-import paramiko
+from Connection_Handle import connection_handling
+from Crypto_Utils import kyber_key_exchange_server, encrypt_model, decrypt_model, wait_until_file_is_complete
 from scp import SCPClient
-import socket
-import time
-import threading
 
+class FederatedLearningGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Federated Learning Server")
+        self.root.geometry("1200x800")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        # Global variables
+        self.training_accuracy_list = []
+        self.training_loss_list = []
+        self.lock = threading.Lock()
+        self.server = None
+        self.is_running = False
+        self.is_paused = False
+        self.current_epoch = 0
+        self.threads = []
+        self.connected_clients = 0
+        self.w_locals = []
+        self.net_glob = None
+        self.dataset_train = None
+        self.dataset_test = None
+        self.args = None
+        
+        # Create main frame
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Create top frame for controls
+        control_frame = ttk.LabelFrame(main_frame, text="Control Panel")
+        control_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Server settings frame
+        settings_frame = ttk.Frame(control_frame)
+        settings_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Server IP and Port
+        ttk.Label(settings_frame, text="Server IP:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.server_ip = tk.StringVar(value="10.0.0.10")
+        ttk.Entry(settings_frame, textvariable=self.server_ip, width=15).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(settings_frame, text="Port:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        self.port = tk.IntVar(value=4045)
+        ttk.Entry(settings_frame, textvariable=self.port, width=6).grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(settings_frame, text="Num Clients:").grid(row=0, column=4, padx=5, pady=5, sticky=tk.W)
+        self.num_clients = tk.IntVar(value=1)
+        ttk.Entry(settings_frame, textvariable=self.num_clients, width=3).grid(row=0, column=5, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(settings_frame, text="Global Epochs:").grid(row=0, column=6, padx=5, pady=5, sticky=tk.W)
+        self.num_epochs = tk.IntVar(value=10)
+        ttk.Entry(settings_frame, textvariable=self.num_epochs, width=3).grid(row=0, column=7, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(settings_frame, text="Model Folder:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.model_folder = tk.StringVar(value=r"C:\\Users\\garrettssh2\\Federated-Learning-on-Rasberry-Pi-Senior-Design\\FL-Physical\\Pi_models")
+        ttk.Entry(settings_frame, textvariable=self.model_folder, width=70).grid(row=1, column=1, columnspan=7, padx=5, pady=5, sticky=tk.W+tk.E)
+        
+        # Control buttons
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.start_button = ttk.Button(button_frame, text="Start", command=self.start_server)
+        self.start_button.pack(side=tk.LEFT, padx=5)
+        
+        self.pause_button = ttk.Button(button_frame, text="Pause", command=self.pause_server, state=tk.DISABLED)
+        self.pause_button.pack(side=tk.LEFT, padx=5)
+        
+        self.stop_button = ttk.Button(button_frame, text="Stop", command=self.stop_server, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=5)
+        
+        # Progress frame
+        progress_frame = ttk.LabelFrame(main_frame, text="Training Progress")
+        progress_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Progress bar
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_label = ttk.Label(progress_frame, text="Overall Progress: 0%")
+        self.progress_label.pack(fill=tk.X, padx=5, pady=2)
+        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.epoch_label = ttk.Label(progress_frame, text="Current Epoch: 0/0")
+        self.epoch_label.pack(fill=tk.X, padx=5, pady=2)
+        
+        # Lower section - split for clients and graphs
+        lower_frame = ttk.Frame(main_frame)
+        lower_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Create a PanedWindow for resizable sections
+        paned = ttk.PanedWindow(lower_frame, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+        
+        # Left section - Clients
+        client_frame = ttk.LabelFrame(paned, text="Connected Clients")
+        paned.add(client_frame, weight=30)
+        
+        # Clients list
+        self.client_list_frame = ttk.Frame(client_frame)
+        self.client_list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Scrollable client list
+        self.client_list = scrolledtext.ScrolledText(self.client_list_frame, wrap=tk.WORD, height=10)
+        self.client_list.pack(fill=tk.BOTH, expand=True)
+        
+        # Right section - Graphs
+        graph_frame = ttk.LabelFrame(paned, text="Training Metrics")
+        paned.add(graph_frame, weight=70)
+        
+        # Set up the figures for plotting
+        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 4))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # Initial plot setup
+        self.ax1.set_title('Training Accuracy')
+        self.ax1.set_xlabel('Epoch')
+        self.ax1.set_ylabel('Accuracy (%)')
+        self.ax1.grid(True)
+        
+        self.ax2.set_title('Training Loss')
+        self.ax2.set_xlabel('Epoch')
+        self.ax2.set_ylabel('Loss')
+        self.ax2.grid(True)
+        
+        # Log frame
+        log_frame = ttk.LabelFrame(main_frame, text="Log")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Log area
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=10)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Update UI
+        self.update_ui()
+    
+    def log(self, message):
+        """Add message to log with timestamp"""
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        log_message = f"[{timestamp}] {message}\n"
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, log_message)
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+        print(message)  # Also print to console
+    
+    def update_ui(self):
+        """Update UI elements periodically"""
+        if self.is_running:
+            # Update progress bar
+            if self.num_epochs.get() > 0:
+                progress = (self.current_epoch / self.num_epochs.get()) * 100
+                self.progress_var.set(progress)
+                self.progress_label.config(text=f"Overall Progress: {progress:.1f}%")
+            
+            # Update epoch label
+            self.epoch_label.config(text=f"Current Epoch: {self.current_epoch}/{self.num_epochs.get()}")
+            
+            # Update plots if we have data
+            if self.training_accuracy_list:
+                self.update_plots()
+        
+        # Schedule the next update
+        self.root.after(1000, self.update_ui)
+    
+    def update_plots(self):
+        """Update the matplotlib plots with current data"""
+        self.ax1.clear()
+        self.ax2.clear()
+        
+        epochs = list(range(1, len(self.training_accuracy_list) + 1))
+        
+        self.ax1.plot(epochs, self.training_accuracy_list, 'b-o')
+        self.ax1.set_title('Training Accuracy')
+        self.ax1.set_xlabel('Epoch')
+        self.ax1.set_ylabel('Accuracy (%)')
+        self.ax1.grid(True)
+        
+        self.ax2.plot(epochs, self.training_loss_list, 'r-o')
+        self.ax2.set_title('Training Loss')
+        self.ax2.set_xlabel('Epoch')
+        self.ax2.set_ylabel('Loss')
+        self.ax2.grid(True)
+        
+        self.fig.tight_layout()
+        self.canvas.draw()
+    
+    def add_client(self, address):
+        """Add a client to the connected clients list"""
+        timestamp = time.strftime('%H:%M:%S')
+        client_info = f"[{timestamp}] Client connected: {address[0]}\n"
+        
+        self.client_list.configure(state=tk.NORMAL)
+        self.client_list.insert(tk.END, client_info)
+        self.client_list.see(tk.END)
+        self.client_list.configure(state=tk.DISABLED)
+    
+    def start_server(self):
+        """Start the federated learning server"""
+        if self.is_running:
+            return
+        
+        # Initialize parameters
+        self.args = self.initialize_args()
+        
+        # Start in a separate thread to keep UI responsive
+        threading.Thread(target=self.run_server, daemon=True).start()
+        
+        # Update UI
+        self.is_running = True
+        self.start_button.config(state=tk.DISABLED)
+        self.pause_button.config(state=tk.NORMAL)
+        self.stop_button.config(state=tk.NORMAL)
+        
+        self.log("Server starting...")
+    
+    def initialize_args(self):
+        """Initialize arguments similar to your original script"""
+        args = args_parser()
+        args.device = torch.device('cpu')
+        args.num_users = self.num_clients.get()
+        args.epochs = self.num_epochs.get()
+        args.dataset = 'HAR_LS'
+        args.model = 'resnet'
+        args.num_channels = 1
+        args.bs = 128
+        args.all_clients = True  # Based on your original code
+        args.frac = 1.0  # Use all clients by default
+        args.global_aggr = 'FedAvg'
+        return args
+    
+    def load_dataset(self):
+        """Load and prepare the dataset"""
+        self.log("Loading dataset...")
+        try:
+            dataset = torch.load('LS_HAR_data.pt', map_location=torch.device('cpu'), weights_only=False)
+            self.log(f"Dataset shape: {dataset.shape}")
+            
+            # Create custom dataset
+            dataset = CustomDataset(dataset)
+            total_count = len(dataset)
+            print(f"Total count of the dataset: {total_count}")
+            train_count = int(0.05*total_count)  # 5%
+            test_count = total_count - train_count
+            
+            # Set random seed for reproducibility
+            random.seed(42)
+            torch.manual_seed(42)
+            
+            # Split dataset
+            self.dataset_train, self.dataset_test = random_split(dataset, [train_count, test_count])
+            self.log(f"Dataset loaded: {train_count} training samples, {test_count} test samples")
+            
+            return dataset, self.dataset_train, self.dataset_test
+        except Exception as e:
+            self.log(f"Error loading dataset: {e}")
+            return None, None, None
+    
+    def initialize_model(self):
+        """Initialize the global model"""
+        self.log("Initializing model...")
+        try:
+            if self.args.model == 'resnet':
+                net_glob = torchvision.models.resnet18()
+                net_glob.conv1 = torch.nn.Conv2d(1, 64, (7, 7), (2, 2), (3, 3), bias=False)
+                net_glob.fc = torch.nn.Linear(net_glob.fc.in_features, 5)
+                net_glob.to(self.args.device)
+            else:
+                self.log('Error: unrecognized model')
+                return None
+            
+            # Load pretrained weights if available
+            try:
+                net_glob.load_state_dict(torch.load("models/main_server_fed_overall.pt", 
+                                               map_location=torch.device('cpu'), 
+                                               weights_only=False))
+                self.log("Loaded existing model weights")
+            except:
+                self.log("No existing model found, using initialized weights")
+            
+            net_glob.train()
+            return net_glob
+        except Exception as e:
+            self.log(f"Error initializing model: {e}")
+            return None
+    
+    def handle_client(self, idx, clientsocket, address, net_glob, w_locals):
+        """Handle a client connection (similar to your original code)"""
+        try:
+            self.add_client(address)
+            self.log(f"Connection from {address[0]} accepted.")
+            
+            shared_key, client_id = kyber_key_exchange_server(clientsocket)
+            self.log("Kyber PQC KEM conducted.")
+            file_path = f"Pi_models/main_server_fed_{client_id}.pt"
+                    
+            with self.lock:
+                encrypt_model(shared_key, "models/main_server_fed_overall.pt", "models/main_server_fed_protected.pt")
+                self.log("Model encrypted using PQC scheme.")
+                connection_handling(clientsocket, address, client_id)
+                
+            wait_until_file_is_complete(file_path)
+                
+            self.log(f"{file_path} is now available and readable!")
+            try:
+                ephemeral_model = decrypt_model(shared_key, file_path)
+                self.log("Integrity check passed.")
+            except ValueError as e:
+                self.log("Integrity check failed.")
+
+            self.log(f"Model decrypted successfully!")
+
+            checkpoint = torch.load(ephemeral_model, map_location=torch.device('cpu'))
+            
+            ephemeral_model = None # Free up the memory space to to prevent scraping and save memory space
+
+            # Load the received model into the global model (net_glob)
+            net_glob.load_state_dict(checkpoint)
+            self.log(f"Model loaded into global model")
+            # Prepare the model for local training or updates
+            localModel = net_glob.state_dict()
+
+            # Append to local weights (w_locals) based on client configuration
+            if self.args.all_clients:
+                w_locals[idx] = copy.deepcopy(localModel)
+            else:
+                w_locals.append(copy.deepcopy(localModel))
+                
+            self.log(f"Processed model from client {client_id}")
+
+        except Exception as e:
+            self.log(f"Error in client {idx}: {e}")
+    
+    def run_server(self):
+        """Main server function"""
+        try:
+            # Load dataset
+            dataset, self.dataset_train, self.dataset_test = self.load_dataset()
+            if dataset is None:
+                self.log("Failed to load dataset. Aborting.")
+                self.stop_server()
+                return
+            
+            # Initialize model
+            self.net_glob = self.initialize_model()
+            if self.net_glob is None:
+                self.log("Failed to initialize model. Aborting.")
+                self.stop_server()
+                return
+            
+            # Copy initial weights
+            w_glob = self.net_glob.state_dict()
+            
+            # Initialize training metrics lists
+            self.training_accuracy_list = []
+            self.training_loss_list = []
+            
+            # Initialize w_locals based on all_clients setting
+            if self.args.all_clients:
+                self.log("Aggregation over all clients")
+                self.w_locals = [w_glob for i in range(self.args.num_users)]
+            else:
+                self.w_locals = []
+            
+            # Set up server socket
+            host = self.server_ip.get()
+            port = self.port.get()
+            
+            self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server.bind((host, port))
+            self.server.settimeout(1.0)  # Set a timeout for accepting connections
+            self.server.listen(self.args.num_users)
+            
+            self.log(f"Server started on {host}:{port}")
+            self.log(f"Waiting for {self.args.num_users} clients to connect...")
+            
+            # Main loop for epochs
+            for iter in range(self.args.epochs):
+                if not self.is_running:
+                    break
+                    
+                self.current_epoch = iter + 1
+                self.log(f"\n===== Starting Epoch: {self.current_epoch}/{self.args.epochs} =====")
+                
+                # Skip loop iterations while paused
+                while self.is_paused and self.is_running:
+                    time.sleep(0.5)
+                
+                if not self.args.all_clients:
+                    self.w_locals = []
+                
+                m = max(int(self.args.frac * self.args.num_users), 1)
+                # Comment out when using adaptive dp
+                idxs_users = np.random.choice(range(self.args.num_users), m, replace=False)
+                
+                self.connected_clients = 0
+                self.threads = []
+
+                # Accept clients for this epoch
+                while self.connected_clients < self.args.num_users and self.is_running:
+                    try:
+                        clientsocket, address = self.server.accept()
+                        
+                        # Handle client in a separate thread
+                        thread = threading.Thread(target=self.handle_client, 
+                                                 args=(self.connected_clients, clientsocket, address, 
+                                                       self.net_glob, self.w_locals))
+                        self.threads.append(thread)
+                        thread.start()
+                        
+                        self.connected_clients += 1
+                        self.log(f"Client {self.connected_clients}/{self.args.num_users} connected")
+                        
+                    except socket.timeout:
+                        # Just continue on timeout
+                        continue
+                    except Exception as e:
+                        self.log(f"Error accepting client: {e}")
+                
+                # Wait for all client threads to finish
+                for thread in self.threads:
+                    thread.join()
+                            
+                # Calculate L2 norms for the updates
+                l2_norms = calculate_l2_norm(self.w_locals)
+                
+                # Compute the median and std of L2 norms
+                median_l2_norm = np.median(l2_norms)
+                std_l2_norm = np.std(l2_norms)
+                
+                # Set the threshold (2 standard deviations)
+                threshold = median_l2_norm + 2 * std_l2_norm
+                
+                self.log(f"Threshold for anomaly detection: {threshold}")
+                
+                # Check for anomalous updates (those that exceed the threshold)
+                for idx, l2_norm in enumerate(l2_norms):
+                    if l2_norm > threshold:
+                        self.log(f"Anomalous model update detected from client {idx+1} with L2 norm: {l2_norm}")
+                    else:
+                        self.log(f"Model update from client {idx+1} is normal with L2 norm: {l2_norm}")
+
+                # Federated weight aggregation
+                if self.is_running:
+                    if self.args.global_aggr == 'FedAvg':
+                        self.log("Aggregating models using FedAvg...")
+                        w_glob = FedAvg(self.w_locals)
+                    else:
+                        self.log('Unrecognized aggregation method')
+                    
+                    # Update global model
+                    self.net_glob.load_state_dict(w_glob)
+                    
+                    # Save the aggregated model
+                    torch.save(self.net_glob.state_dict(), "models/main_server_fed_overall.pt")
+                    self.log("Saved aggregated model")
+                    
+                    # Evaluate model
+                    self.net_glob.eval()
+                    acc_train, l = test_img(self.net_glob, self.dataset_train, self.args)
+                    self.training_accuracy_list.append(acc_train)
+                    self.training_loss_list.append(l)
+                    self.log(f'Training Accuracy: {acc_train:.2f}%')
+                    self.log(f'Training Loss: {l:.4f}')
+                    
+                    # Clean up model folder for next epoch
+                    model_folder = self.model_folder.get()
+                    for file in os.scandir(model_folder):
+                        os.remove(file.path)
+                    self.log(f"Cleared model folder for next epoch")
+            
+            # Final evaluation
+            if self.is_running:
+                self.log("\n===== Training Complete =====")
+                self.net_glob.eval()
+                acc_test, loss_test = test_img(self.net_glob, self.dataset_test, self.args)
+                self.log(f"Final Test Accuracy: {acc_test:.2f}%")
+                self.log(f"Final Test Loss: {loss_test:.4f}")
+                
+                # Send exit signal to all clients
+                self.log("Sending exit signal to all clients...")
+                for idx in range(self.args.num_users):
+                    try:
+                        clientsocket, address = self.server.accept() 
+                        self.log(f"Sending exit signal to {address[0]}")
+                        clientsocket.send(bytes("EXIT()", "utf-8"))    
+                        msg = clientsocket.recv(64)
+                        msg_decoded = msg.decode("utf-8")
+                        self.log(msg_decoded)
+                    except Exception as e:
+                        self.log(f"Error sending exit signal: {e}")
+            
+            # Close server
+            if self.server:
+                self.server.close()
+                self.server = None
+            
+            self.log("Server closed")
+            
+        except Exception as e:
+            self.log(f"Error in server execution: {e}")
+        finally:
+            # Reset UI state
+            self.is_running = False
+            self.root.after(0, self.reset_ui)
+    
+    def pause_server(self):
+        """Pause the server"""
+        if not self.is_running:
+            return
+        
+        self.is_paused = not self.is_paused
+        if self.is_paused:
+            self.pause_button.config(text="Resume")
+            self.log("Server paused")
+        else:
+            self.pause_button.config(text="Pause")
+            self.log("Server resumed")
+    
+    def stop_server(self):
+        """Stop the server"""
+        if not self.is_running:
+            return
+        
+        self.is_running = False
+        self.is_paused = False
+        self.log("Stopping server...")
+        
+        # Close socket
+        if self.server:
+            try:
+                self.server.close()
+                self.server = None
+            except:
+                pass
+        
+        # Reset UI
+        self.reset_ui()
+    
+    def reset_ui(self):
+        """Reset UI elements to default state"""
+        self.start_button.config(state=tk.NORMAL)
+        self.pause_button.config(state=tk.DISABLED, text="Pause")
+        self.stop_button.config(state=tk.DISABLED)
+        
+        self.progress_var.set(0)
+        self.progress_label.config(text="Overall Progress: 0%")
+        self.epoch_label.config(text=f"Current Epoch: 0/0")
+        
+        # Clear client list
+        self.client_list.configure(state=tk.NORMAL)
+        self.client_list.delete(1.0, tk.END)
+        self.client_list.configure(state=tk.DISABLED)
+    
+    def on_closing(self):
+        """Handle window close event"""
+        if self.is_running:
+            if messagebox.askokcancel("Quit", "Server is running. Do you want to stop it and quit?"):
+                self.stop_server()
+                self.root.destroy()
+        else:
+            self.root.destroy()
+
+
+# CustomDataset class from your original code
 class CustomDataset(Dataset):
     def __init__(self, data_tensor):
-        #self.data = data_tensor[:, :-1]
-        self.data = data_tensor[:, :-1].reshape(-1,1, 9, 100) #[batch_size, channels, height, width]
+        self.data = data_tensor[:, :-1].reshape(-1, 1, 9, 100)  # [batch_size, channels, height, width]
         self.targets = data_tensor[:, -1]
         print(self.data.shape)
 
@@ -52,272 +598,9 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx], self.targets[idx]
-    
-def IMU_noniid(dataset, num_users,labels):
-    """
-    Sample non-I.I.D client data from IMU dataset 
-    Altered from Mnist_noniid definition
-    :param dataset:
-    :param num_users:
-    :return:
-    """
-    # 60,000 training imgs -->  200 imgs/shard X 300 shards
-    num_shards, num_imgs = 90, 10
-    idx_shard = [i for i in range(num_shards)]
-    dict_users = {i: np.array([]) for i in range(num_users)}
-    idxs = np.arange(num_shards*num_imgs)
-    #labels = dataset.train_labels.numpy()
-
-    # sort labels
-    idxs_labels = np.vstack((idxs, labels))
-    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
-    idxs = idxs_labels[0, :]
-
-    # divide and assign 2 shards/client
-    for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 30, replace=False))
-        idx_shard = list(set(idx_shard) - rand_set)
-        for rand in rand_set:
-            dict_users[i] = np.concatenate(
-                (dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0)
-        dict_users[i] = [int(x) for x in dict_users[i]]
-    return dict_users
-
-#Define function to adjust Privacy Budget
-def adjustPB(PBList, accList):
-    print(PBList)
-    newAcc = []
-    newPB = PBList.copy()
-    newAcc = accList.copy()
-    newAcc.sort()
-    i = len(newAcc)
-    indexList = []
-    for item in newAcc: 
-        index = accList.index(item)
-        if (index in indexList):
-            accList[index] = 0
-        index = accList.index(item)
-        indexList.append(index)
-        print(index)
-        newPB[index] = newPB[index] - (0.1*i)
-        #Set some bounds
-        if (newPB[index] > 2):
-            newPB[index] = 2
-        if (newPB[index] < 0.7):
-            newPB[index] = 0.7
-        i -= 1
-    print(newPB)
-    return newPB
-        
 
 
-if __name__ == '__main__':
-    f = open("config_server.txt", "r")
-    lineCount = 0
-    for line in f:
-        currentLine = line.strip('\n').split("=")
-        print(currentLine)
-
-        if currentLine[0] == 'NUM_CLIENTS':
-            NUM_CLIENTS = currentLine[1]
-            NUM_CLIENTS = int(NUM_CLIENTS)
-        
-        if currentLine[0] == 'SERVER_PORT':
-            PORT = currentLine[1]
-            PORT = int(PORT)
-
-        if currentLine[0] == 'SERVER_IP':
-            SERVER = currentLine[1]
-
-        if currentLine[0] == 'MODELFOLDER':
-            MODELFOLDER = currentLine[1] 
-        
-        if currentLine[0] == 'NUM_gl_EPOCHS':
-            NUM_gl_EPOCHS = currentLine[1] 
-            NUM_gl_EPOCHS = int(NUM_gl_EPOCHS)      
-
-        
-        lineCount += 1
-
-    f.close()
-    # parse args
-    args = args_parser()
-    args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
-    ################## args def for testing
-    args.num_users = NUM_CLIENTS
-    args.epochs = NUM_gl_EPOCHS
-    args.dataset = 'HAR_LS' 
-    args.model = 'resnet' 
-    args.num_channels = 1 
-    args.bs =128
-
-    ##################
-    training_accuracy_list = []
-    training_loss_list = []
-
-    # load dataset and split users
-    dataset = torch.load('../../LS_HAR_data.pt')
-    print(dataset.shape)
-    #dataset = dataset.float()
-    dataset = CustomDataset(dataset)
-    
-
-    total_count = len(dataset)
-    train_count = int(0.05*total_count) # 5%
-    test_count = total_count - train_count
-    random.seed(42)
-    torch.manual_seed(42)
-    dataset_train, dataset_test = random_split(dataset, [train_count, test_count])
-    img_size = dataset_train[0][0].shape
-    
-    # build model
-    if args.model == 'resnet':
-       # net_glob = ResNetTest(torchvision.models.resnet.BasicBlock, [2, 2, 2, 2]).to(args.device)
-       net_glob = torchvision.models.resnet18()
-      # net_glob.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-       net_glob.conv1 = torch.nn.Conv2d(1, 64, (7, 7), (2, 2), (3, 3), bias=False)
-       net_glob.fc = torch.nn.Linear(net_glob.fc.in_features,5)
-       net_glob.to(args.device)
-    else:
-        exit('Error: unrecognized model')
-
-
-    net_glob.load_state_dict(torch.load("models/main_server_fed_overall.pt", map_location=torch.device('cpu')))
-
-    net_glob.train()
-
-    # copy weights
-    w_glob = net_glob.state_dict()
-
-
-    # training
-    loss_train = []
-    cv_loss, cv_acc = [], []
-    val_loss_pre, counter = 0, 0
-    net_best = None
-    best_loss = None
-    val_acc_list, net_list = [], []
-
-    clientAddresses = []
-   
-
-    file1 = open("output_FL_Resnet_HAR.txt", "w") 
-
-    epsList = [ ]
-
-    if args.all_clients: 
-        print("Aggregation over all clients")
-        w_locals = [w_glob for i in range(args.num_users)]
-    
-    #host = "10.4.159.106"   # this the address of server computer (not client!!)
-    host = SERVER
-    port = PORT
-
-   # set up TCP socket connection for server 
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((host,port))
-    server.listen(args.num_users) 
-        
-    for iter in range(args.epochs):
-
-        #Distribute the model to all clients
-        for idx in range(0, args.num_users):
-            print("In for loop :)")
-            clientsocket, address = server.accept() 
-            print("connection from " + address[0] + " accepted.")
-            Connection_handling(clientsocket, address)
-
-        #Wait for all client models to be received
-        modelFolder = MODELFOLDER
-        fileCount = 0
-        while (fileCount != args.num_users):
-            for file in os.scandir(modelFolder):
-                if file.is_file():
-                    fileCount += 1
-
-        print("Epoch: ", iter)
-        loss_locals = []
-        if not args.all_clients:
-            w_locals = []
-        m = max(int(args.frac * args.num_users), 1)
-        #Comment out when using adaptive dp
-        idxs_users = np.random.choice(range(args.num_users), m, replace=False)
-        #print("Idx List: " , idxs_users)
-        
-        accuracyList = []
-        #for idx in idxs_users:
-        for idx in range(1, args.num_users+1):
-            print(" User: " , idx)
-            
-           # 'fed_{}_{}_{}_C{}_Non_iid{}_DP_3_clients.png'.format(args.dataset)
-            File_in_use = True
-            while File_in_use:
-                try:
-                    checkpoint = torch.load('Pi_models/main_server_fed_{}.pt'.format(idx), map_location=torch.device('cpu'))
-                    File_in_use = False
-                except:
-                    print('Pi_models/main_server_fed_{}.pt being written currently'.format(idx))
-                    time.sleep(4)
-                    File_in_use = True
-            net_glob.load_state_dict(checkpoint)
-
-
-           # net_glob.load_state_dict(checkpoint['model_state_dict'])
-            localModel = net_glob.state_dict()
-
-            if args.all_clients:
-                w_locals[idx] = copy.deepcopy(localModel)
-            else:
-                w_locals.append(copy.deepcopy(localModel))
-            #loss_locals.append(copy.deepcopy(loss))
-
-        #print("Epsilon List: ", epsList)
-
-        # update global weights
-        if args.global_aggr == 'FedAvg':
-            w_glob = FedAvg(w_locals)
-            #print('this actually runs')
-        else:
-            print('something wrong')
-            
-            
-        # copy weight to net_glob
-        net_glob.load_state_dict(w_glob)
-        
-        #save the model
-        torch.save(net_glob.state_dict(), "models/main_server_fed_overall.pt")
-
-
-        # print loss and accuracy of current model
-        net_glob.eval()
-        acc_train, l = test_img(net_glob,dataset_train, args)
-        training_accuracy_list.append(acc_train)
-        training_loss_list.append(l)
-        print('Accuracy: ', acc_train)
-        print('Loss: ', l)
-        print(training_accuracy_list)
-        #clearprint(training_loss_list)
-        
-        #Remove all previous models for new ones to come in
-        for file in os.scandir(modelFolder):
-            os.remove(file)
-
-            
-
-
-    # Final Connection Handling to terminate clients
-    for idx in range(0, args.num_users):  
-        clientsocket, address = server.accept() 
-        print("connection from " + address[0] + " accepted.")
-        clientsocket.send(bytes("EXIT()", "utf-8"))    
-        msg = clientsocket.recv(64)
-        msg_decoded = msg.decode("utf-8")
-        print(msg_decoded)
-
-    # testing
-    net_glob.eval()
-
-    acc_test, loss_test = test_img(net_glob, dataset_train, args)
-
-    #Close the server
-    server.close()
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = FederatedLearningGUI(root)
+    root.mainloop()
