@@ -1,8 +1,9 @@
 # A config file for each client. Please edit the below details before running the client code and ensure you do not have any extra spaces and ensure you keep all quotations
 CLIENT_ID=1
 SERVER_PORT=4045
-SERVER_IP=10.4.130.19
-SERVER_NAME=SERVERUSERNAME
-SERVER_PASS=ServerPassword
-SERVER_FILE_LOC=/Users/trev4/Desktop/FL-Finalrepo/SeniorDesign-Group11/FL-Physical/Pi_models/
+SERVER_IP=10.0.0.51
+SERVER_NAME=garrettssh
+SERVER_PASS=password2
+SERVER_FILE_LOC=C:/Users/garrettssh/Downloads/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/
+
 

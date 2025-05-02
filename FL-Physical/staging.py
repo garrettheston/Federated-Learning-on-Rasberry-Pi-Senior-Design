@@ -1,11 +1,8 @@
-#includes
 import paramiko
+import os
 from scp import SCPClient
 import socket
 import time
-#import matplotlib
-#matplotlib.use('Agg')
-#import matplotlib.pyplot as plt
 import copy
 import numpy as np
 from torchvision import datasets, transforms
@@ -14,7 +11,28 @@ import torchvision
 from torch.utils.data import Dataset,DataLoader, random_split
 import torch.nn.functional as F
 from torch import nn
+from kyber_py.ml_kem import ML_KEM_512
+from Crypto.Cipher import AES
+#from Crypto.Cipher import unpad
+from Crypto.Random import get_random_bytes
+from Crypto.Protocol.KDF import HKDF
+from Crypto.Hash import SHA256
+#import tpm2_pytss
 import random
+import io
+import hashlib
+
+def replace_with_random_weights(model):
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            param.data = 50 + torch.randn_like(param.data)  # Replace with random values
+
+def hash_file(file_path):
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(4096):
+            sha256.update(chunk)
+    return sha256
 
 def test(net_g, data_loader, args):
     # testing
@@ -36,6 +54,116 @@ def test(net_g, data_loader, args):
 
     return accuracy, loss
     
+def traffic_handling(server_socket, client_id):
+   
+    # Receive the public key with the label
+    public_key_with_label = server_socket.recv(4096)
+   
+    # Check for the "EXCHANGE:" label
+    label = b"EXCHANGE:"  # The expected label from the server
+   
+    if public_key_with_label.startswith(label):
+        # Extract the actual public key (remove the label)
+        public_key = public_key_with_label[len(label):]
+        print("[CLIENT] Public key received successfully.")
+       
+        try:
+            # Encapsulate shared secret
+            start_time = time.time()
+            shared_secret, ciphertext = ML_KEM_512.encaps(public_key)
+            end_time = time.time()
+            print(f"Time to generate shared_secret: {(end_time-start_time) * 1000}")
+            print("[CLIENT] Here is the shared secret key derived from the server", shared_secret.hex())
+
+            data = client_id.to_bytes(1,byteorder='big') + ciphertext
+            # Send ciphertext
+            server_socket.sendall(data)
+           
+            return shared_secret
+
+        except Exception as e:
+            print(f"[CLIENT] Error during key exchange: {e}")
+            return
+
+    else:
+        # If the label doesn't match, check for an "EXIT()" message
+        msg_decoded = public_key_with_label.decode()  # Decode the received message
+        if msg_decoded == "EXIT()":
+            print("[CLIENT] Received exit message.")
+            server_socket.send(bytes("Client terminated", "utf-8"))
+            server_socket.close()
+            exit()
+        else:
+            print("[CLIENT] Error: Public key does not start with the expected label or invalid message.")
+            server_socket.close()
+            exit()
+
+    print("[CLIENT] created shared secret")
+
+    return
+
+def decrypt_model(shared_secret):
+    
+    aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+    
+    print(f"[CLIENT] Model is beginning decryption")
+    with open("main_server_fed.pt", "rb") as f:
+        data = f.read()
+    sha256_received, iv, ciphertext = data[:32], data[32:48], data[48:]  # Extract components and hash
+    print(f"[CLIENT] received IV: {iv}")
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    plaintext = cipher.decrypt(ciphertext)
+
+    # Compute SHA-256 of decrypted plaintext
+    sha256_computed = hashlib.sha256(plaintext).digest()
+
+    # Compare hashes
+    if sha256_computed != sha256_received:
+        raise ValueError("[CLIENT] Integrity check failed: hash mismatch")
+    else:
+        print("[CLIENT] Integrity check passed.")
+
+    print("[CLIENT] Model decrypted successfully. Finished writing to ephemeral storage")
+    return io.BytesIO(plaintext)
+
+def encrypt_model(shared_secret,input_file):
+    
+    sha256 = hash_file("main_server_fed_"+CLIENT_ID+".pt") # 32 byte long hash
+
+    aes_key = HKDF(master=shared_secret, key_len=32, salt=None, hashmod=SHA256, num_keys=1)
+    iv = get_random_bytes(16)
+    with open(input_file, "rb") as f:
+        plaintext = f.read()
+    cipher = AES.new(aes_key, AES.MODE_OFB, iv=iv)
+    ciphertext = cipher.encrypt(plaintext)
+    print(f"[SERVER] iv: {iv}")
+    data_to_send = sha256.digest() + iv + ciphertext
+    with open(input_file, "wb") as f:
+        f.write(data_to_send)
+
+    print("[SERVER] Model encrypted successfully.")
+
+def wait_until_file_is_complete(file_path, stable_time=2.0, check_interval=0.5):
+    last_size = -1
+    same_size_count = 0
+
+    while True:
+        if os.path.exists(file_path) and os.access(file_path, os.R_OK):
+            current_size = os.path.getsize(file_path)
+            if current_size == last_size:
+                same_size_count += check_interval
+                if same_size_count >= stable_time:
+                    print(f"File {file_path} is now stable and readable.")
+                    break
+            else:
+                same_size_count = 0
+                last_size = current_size
+        else:
+            same_size_count = 0  # Reset if file disappears or unreadable
+
+        print(f"Waiting for file {file_path} to stabilize...")
+        time.sleep(check_interval)
+
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
         self.dataset = dataset
@@ -94,7 +222,6 @@ class LocalUpdate(object):
             train_accuracy, train_loss = test(net, self.ldr_train, self.args)
         return net.state_dict(), sum(epoch_loss) / len(epoch_loss), epoch_loss
 
-
 def SendToServer(server, file = "",filepath = "",message = ""):
  #   try:
     with SCPClient(server.get_transport()) as scp_Client:
@@ -115,12 +242,11 @@ dataset = CustomDataset(dataset)
 
 #Split data
 total_count = len(dataset)
-train_count = int(0.01*total_count) # 5%
-test_count = total_count - train_count # 
+train_count = int(0.00917*total_count) # .9% of dataset to train on exactly 300 images
+test_count = total_count - train_count # remaining dataset is used for testing
 random.seed(42)
 torch.manual_seed(42)
 dataset_train, dataset_test = random_split(dataset, [train_count, test_count])
-
 
 #Defining arguments
 class Args:
@@ -128,14 +254,13 @@ class Args:
         self.local_bs = 128
         self.lr = 0.01
         self.momentum = 0.9
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = 'cpu'
         self.verbose = True
         self.local_ep = 1
         #self.client_id = 1
         #self.ServerName = "ServerUsername"
         #self.ServerPassword = "ServerPassword"
 args = Args()
-
 
 # Read in the config file
 f = open("config.txt", "r")
@@ -185,14 +310,14 @@ while True:
     net_glob.to(args.device)
 ##
 
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Searching_connection = True
     while Searching_connection:
         try:
             #connect here ##############
             #PORT = 4045          
             #SERVER = "10.4.130.19"
-            client.connect((SERVER, PORT))
+            serversocket.connect((SERVER, PORT))
             Searching_connection = False
 
         except:
@@ -202,32 +327,42 @@ while True:
     
     ## Handle Connection
     # here is were we have communication with a socket back and forth
-    msg = client.recv(1024)
-    msg_decoded = msg.decode("utf-8")
-    print(msg_decoded)
-
-    if(msg_decoded == "EXIT()"):
-        client.send(bytes("Client-"+CLIENT_ID+" terminated","utf-8"))
-        client.close()
-        exit()
-    
-    client.send(bytes("Client recieved file from sever","utf-8"))
-    client.close()
-    # we close socket here        
+    shared_secret = traffic_handling(serversocket, int(CLIENT_ID))
     
     ## Model Training
-    time.sleep(5)
+    wait_until_file_is_complete("main_server_fed.pt")
+
+    start_time = time.time()
+    ephemeral_model = decrypt_model(shared_secret)
+    end_time = time.time()
+    print(f"Decryption time result: {(end_time-start_time) * 1000}")
+
     # Load the model dictionary/parameters
     print("Loading Model Parameters...")
-    net_glob.load_state_dict(torch.load('main_server_fed.pt'))
+    net_glob.load_state_dict(torch.load(ephemeral_model, map_location=torch.device('cpu'), weights_only=False))
+    
+    ephemeral_model = None
+
     # Call training function
     print("\nTraining...")
+    start_time = time.time()
     state_dict, avg_loss, lossPerEpoch = local_update.train(net_glob)
+    end_time = time.time()
+    print(f"Training time result: {(end_time-start_time) * 1000}")
     print("Training Finished")
+
     # Save the model dictionary/parameters
     torch.save(state_dict, 'main_server_fed_'+CLIENT_ID+'.pt')
 
+    # in this case I would like to convert to random noise
+    #replace_with_random_weights(net_glob)
 
+    #torch.save(net_glob.state_dict(), 'main_server_fed_'+CLIENT_ID+'.pt')
+
+    start_time = time.time()
+    encrypt_model(shared_secret, "main_server_fed_"+CLIENT_ID+".pt")
+    end_time = time.time()
+    print(f"Encrypt time result: {(end_time-start_time) * 1000}")
 
     ## Send Model
     # Here is only sending the model back
@@ -236,20 +371,32 @@ while True:
     password = SERVER_PASS  # password of central server
     file_path = SERVER_FILE_LOC
         
+    private_key_path = r"C:\\Users\\garrettssh\\.ssh\\id_rsa"
+    private_key = paramiko.RSAKey.from_private_key_file(private_key_path)
 
     server_SSH = paramiko.client.SSHClient()
     server_SSH.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    server_SSH.connect(SERVER, username=username, password=password)
+    server_SSH.connect(SERVER, username=username, pkey=private_key)
+    start_time = time.time()
     SendToServer(server=server_SSH,file="main_server_fed_"+CLIENT_ID+".pt",
-                filepath=file_path+"main_server_fed_"+CLIENT_ID+".pt",
+                filepath="C:/Users/garrettssh2/Federated-Learning-on-Rasberry-Pi-Senior-Design/FL-Physical/Pi_models/main_server_fed_"+CLIENT_ID+".pt",
                 message="sent file")
+    end_time = time.time()
+    print(f"Transmission of model client->server: {(end_time-start_time) * 1000}")
+    
+    os.remove("main_server_fed.pt")
 
+'''
+with open('LS_HAR_data_encrypted.pt', 'rb') as f:
+    iv = f.read(16)
+    encrypted_data = f.read()
 
+aes_key = tpm.unseal('mydatasetkey')
 
+cipher = AES.new(aes_key, AES.MODE_CBC, iv=iv)
+dataset_decrypted = unpad(cipher.decrypt(encrypted_data, AES.block_size))
 
+dataset_np = np.frombuffer(dataset_decrypted, dtype=np.float32)
+dataset = torch.from_numpy(dataset_np).float()
 
-
-
-
-
-
+dataset = CustomDataset(dataset) '''
